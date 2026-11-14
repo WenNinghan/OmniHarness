@@ -34,6 +34,52 @@ def event_loop_policy():
     return asyncio.WindowsSelectorEventLoopPolicy() if sys.platform == "win32" else asyncio.get_event_loop_policy()
 
 
+async def _start_owner(ready, child_env):
+    ready.unlink(missing_ok=True)
+    child = subprocess.Popen([sys.executable, str(Path(__file__).with_name("v10_owner_handshake_child.py"))],
+        env=child_env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+    try:
+        deadline = time.monotonic() + 15
+        while not ready.exists() and child.poll() is None and time.monotonic() < deadline:
+            await asyncio.sleep(0.05)
+        if not ready.exists():
+            pytest.fail("Owner listener failed to start")
+        return child, int(ready.read_text(encoding="ascii"))
+    except BaseException:
+        if child.poll() is None:
+            child.kill()
+        await asyncio.to_thread(child.wait, 10)
+        raise
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("payload", ["", "not-a-pid"])
+async def test_failed_owner_start_reaps_child(monkeypatch, tmp_path, payload):
+    ready = tmp_path / "owner-ready"
+    children = []
+    popen = subprocess.Popen
+
+    def launch_invalid_owner(_args, **kwargs):
+        code = ("import sys,time; from pathlib import Path; "
+                "Path(sys.argv[1]).write_text(sys.argv[2], encoding='ascii'); time.sleep(30)")
+        child = popen([sys.executable, "-c", code, str(ready), payload], **kwargs)
+        children.append(child)
+        return child
+
+    monkeypatch.setattr(subprocess, "Popen", launch_invalid_owner)
+    try:
+        with pytest.raises(ValueError):
+            await _start_owner(ready, os.environ.copy())
+        assert len(children) == 1 and children[0].poll() is not None
+    finally:
+        # Keep the regression test itself isolated even if startup cleanup breaks.
+        for child in children:
+            if child.poll() is None:
+                child.kill()
+            await asyncio.to_thread(child.wait, 10)
+
+
 @pytest.mark.asyncio
 async def test_fresh_owner_challenge_lifetime_and_transactional_notification(postgres_environment, tmp_path):
     settings, engine, factory, _ = postgres_environment
@@ -45,20 +91,8 @@ async def test_fresh_owner_challenge_lifetime_and_transactional_notification(pos
                 "V10_HANDSHAKE_READY": str(ready), "V10_HANDSHAKE_LOG": str(log)})
 
     async def start_owner(*, lose_ack=False):
-        ready.unlink(missing_ok=True)
         child_env = {**env, "V10_HANDSHAKE_LOSE_CLAIM_ACK": "1" if lose_ack else "0"}
-        child = subprocess.Popen([sys.executable, str(Path(__file__).with_name("v10_owner_handshake_child.py"))],
-            env=child_env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
-        deadline = time.monotonic() + 15
-        while not ready.exists() and child.poll() is None and time.monotonic() < deadline:
-            await asyncio.sleep(0.05)
-        if not ready.exists():
-            if child.poll() is None:
-                child.kill()
-                await asyncio.to_thread(child.wait, 10)
-            pytest.fail("Owner listener failed to start")
-        return child, int(ready.read_text(encoding="ascii"))
+        return await _start_owner(ready, child_env)
 
     async def stop_owner(child):
         if child.poll() is None:

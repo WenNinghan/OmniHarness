@@ -369,6 +369,21 @@ async def test_postgres_real_pin_then_fail_closed_and_atomic_ledger(
             assert run_id in listener.tainted
         owner.connection.invalidate()
         owner.lost = True
+    # Disconnecting the client does not synchronously remove its backend or
+    # release its session advisory lock on PostgreSQL. Observe that exact
+    # backend ending before testing the replacement owner's acquisition.
+    deadline = asyncio.get_running_loop().time() + 5
+    while True:
+        with engine.connect() as connection:
+            previous_owner_exists = connection.scalar(
+                text("SELECT EXISTS (SELECT 1 FROM pg_stat_activity "
+                     "WHERE pid = :pid AND backend_start = :backend_start)"),
+                {"pid": identity_row["pid"], "backend_start": identity_row["backend_start"]},
+            )
+        if not previous_owner_exists:
+            break
+        assert asyncio.get_running_loop().time() < deadline, "Previous owner backend did not exit"
+        await asyncio.sleep(0.01)
     replacement = Worker(settings, engine)
     with WorkerLock(engine, settings) as new_owner:
         replacement.lock = new_owner

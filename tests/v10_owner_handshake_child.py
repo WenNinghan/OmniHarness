@@ -55,7 +55,10 @@ async def main():
             await listener.execute("LISTEN v10_test_owner_challenge")
             await listener.execute("LISTEN v10_test_new_run")
             listener_pid = (await (await listener.execute("SELECT pg_backend_pid()" )).fetchone())[0]
-            Path(os.environ["V10_HANDSHAKE_READY"]).write_text(str(listener_pid), encoding="ascii")
+            ready_path = Path(os.environ["V10_HANDSHAKE_READY"])
+            staged_ready = ready_path.with_name(ready_path.name + ".tmp")
+            staged_ready.write_text(str(listener_pid), encoding="ascii")
+            staged_ready.replace(ready_path)
             try:
                 while True:
                     notes = [note async for note in listener.notifies(timeout=0.5, stop_after=1)]
