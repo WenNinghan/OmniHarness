@@ -28,7 +28,8 @@ jobs:
           --health-timeout 5s
           --health-retries 12
     env:
-      OMNI_TEST_POSTGRES_URL: postgresql+psycopg://postgres:omniharness-ci-only@127.0.0.1:5432/omniharness_test
+      OMNI_TEST_POSTGRES_URL: postgresql+psycopg://postgres@127.0.0.1:5432/omniharness_test
+      PGPASSWORD: omniharness-ci-only
       LANGSMITH_TRACING: "false"
       LANGCHAIN_TRACING_V2: "false"
     steps:

@@ -131,6 +131,42 @@ def test_new_file_and_write_allowlist(workspace):
                      operation_id="create-no", run_id="run-1")
 
 
+@pytest.mark.skipif(os.name == "nt", reason="POSIX dir_fd ancestor behavior")
+@pytest.mark.parametrize("ancestor", ["missing", "regular_file", "symlink"])
+def test_unsafe_posix_ancestor_is_rejected_before_recovery(workspace, tmp_path, ancestor):
+    io, root, _, _ = workspace
+    parent = root / "src" / "blocked"
+    external = tmp_path / "external"
+    external.mkdir()
+    sentinel = external / "sentinel.txt"
+    sentinel.write_text("untouched", encoding="utf-8")
+    if ancestor == "regular_file":
+        parent.write_text("original", encoding="utf-8")
+    elif ancestor == "symlink":
+        parent.symlink_to(external, target_is_directory=True)
+
+    with pytest.raises(WorkspaceError) as error:
+        io.patch("ws", "instance", 1, path="src/blocked/new.txt", content="no",
+                 expected_sha256=None, operation_id="unsafe-ancestor", run_id="run-1")
+    assert error.value.code == "unsafe_path"
+    assert not (io.storage_root / "recovery" / "unsafe-ancestor").exists()
+    assert not (external / "new.txt").exists()
+    assert sentinel.read_text(encoding="utf-8") == "untouched"
+    if ancestor == "missing":
+        assert not parent.exists()
+    elif ancestor == "regular_file":
+        assert parent.read_text(encoding="utf-8") == "original"
+    else:
+        assert parent.is_symlink()
+
+
+def test_parent_context_does_not_mask_caller_os_error(workspace):
+    io, root, _, _ = workspace
+    with pytest.raises(OSError, match="caller failure"):
+        with io._parents(root / "src" / "new.txt"):
+            raise OSError("caller failure")
+
+
 def test_same_version_concurrent_patches_have_one_winner(workspace):
     from concurrent.futures import ThreadPoolExecutor
 

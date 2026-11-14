@@ -294,11 +294,17 @@ class WorkspaceIO:
                     if grant is not None and parent == Path(grant.root):
                         self._verify_root_identity(grant, info)
             else:
-                parent_fd = os.open(target.anchor, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+                try:
+                    parent_fd = os.open(target.anchor, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+                except OSError:
+                    _fail("unsafe_path", "The path is missing, busy, or cannot be accessed safely.")
                 stack.callback(os.close, parent_fd)
                 current = Path(target.anchor)
                 for part in target.parent.parts[1:]:
-                    parent_fd = os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=parent_fd)
+                    try:
+                        parent_fd = os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=parent_fd)
+                    except OSError:
+                        _fail("unsafe_path", "The path is missing, busy, or cannot be accessed safely.")
                     stack.callback(os.close, parent_fd)
                     current /= part
                     if grant is not None and current == Path(grant.root):

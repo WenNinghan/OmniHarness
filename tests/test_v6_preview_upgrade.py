@@ -574,6 +574,7 @@ def test_backup_rejects_insufficient_space(monkeypatch, tmp_path):
 def test_compose_clears_inherited_environment(monkeypatch):
     calls = []
     monkeypatch.setattr(deploy, "_assert_compose_locations", lambda: None)
+    monkeypatch.setattr(deploy, "mapped", lambda _: "/test/profile")
     monkeypatch.setattr(deploy, "wsl", lambda *a, **k: calls.append(a) or b"")
     deploy.compose("config", "--quiet")
     assert calls[0][:2] == ("env", "-i")
