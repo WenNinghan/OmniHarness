@@ -69,7 +69,8 @@ async def configured(request, monkeypatch):
     # this suite continues to verify compatibility rather than the new graph.
     from omniharness.m3_roles import PLUGIN_VERSIONS, ROLE_VERSIONS, WORKFLOW_VERSION
 
-    def freeze_legacy(db, run, app_settings):
+    def freeze_legacy(db, run, app_settings, *, stage_overrides=None, strategy="staged"):
+        assert stage_overrides is None and strategy == "staged"
         services.freeze_agent_run_config(db, run, app_settings, WORKFLOW_VERSION,
                                          role_versions=ROLE_VERSIONS, plugin_versions=PLUGIN_VERSIONS)
 

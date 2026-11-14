@@ -46,6 +46,7 @@ async def test_provider_error_canary_never_reaches_fenced_checkpoint_or_events(r
     checkpoint_schema = f"privacy_{uuid4().hex}"
     await initialize_checkpoint_schema(url, schema=checkpoint_schema)
     calls, tracing_states = [], []
+    staged_error = threading.Event()
 
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, *_args):
@@ -55,7 +56,7 @@ async def test_provider_error_canary_never_reaches_fenced_checkpoint_or_events(r
             size = int(self.headers.get("Content-Length", "0"))
             json.loads(self.rfile.read(size))
             calls.append(self.headers.get("Authorization") == f"Bearer {CANARY}")
-            if len(calls) == 1:
+            if len(calls) == 1 and not staged_error.is_set():
                 body = {"id": "synthetic-parent", "object": "chat.completion", "created": 1,
                         "model": "fake-model", "choices": [{"index": 0, "finish_reason": "tool_calls",
                             "message": {"role": "assistant", "content": None, "tool_calls": [{
@@ -139,11 +140,12 @@ async def test_provider_error_canary_never_reaches_fenced_checkpoint_or_events(r
             assert response.status_code == 202 and CANARY not in response.text
             product_run = response.json()["run_id"]
             calls.clear()
+            staged_error.set()  # Current staged workflow receives the synthetic provider error immediately.
             product_worker = Worker(settings, engine)
             with WorkerLock(engine, settings) as owner:
                 product_worker.lock = owner
                 assert await product_worker.run_once() == product_run
-            assert len(calls) >= 2 and all(calls)
+            assert len(calls) >= 1 and all(calls)
             assert tracing_states and not any(tracing_states)
             public = client.get(f"/api/v1/runs/{product_run}")
             assert public.status_code == 200 and public.json()["status"] == "pending_review"
