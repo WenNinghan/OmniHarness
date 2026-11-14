@@ -1,0 +1,133 @@
+name: omniharness
+
+x-app-environment: &app-environment
+  OMNI_DATABASE_URL: postgresql+psycopg://omniharness:${OMNI_POSTGRES_PASSWORD:?Run scripts/start.ps1 or scripts/start.sh first}@postgres:5432/${OMNI_DATABASE_NAME:-omniharness}
+  OMNI_DATA_DIR: /data
+  OMNI_SECRET_DIR: /secrets
+  OMNI_STATIC_DIR: /app/web/dist
+  OMNI_HOST: 0.0.0.0
+  OMNI_PORT: "8787"
+  OMNI_ALLOWED_ORIGINS: ${OMNI_ALLOWED_ORIGINS:-http://127.0.0.1:8787,http://localhost:8787}
+  OMNI_ENABLE_DEMO: ${OMNI_ENABLE_DEMO:-true}
+  OMNI_ENABLE_AGENT: ${OMNI_ENABLE_AGENT:-false}
+  OMNI_ENABLE_TOOLS: ${OMNI_ENABLE_TOOLS:-false}
+  OMNI_INSTANCE_ID: ${OMNI_INSTANCE_ID:-local}
+  OMNI_WORKSPACE_BROKER_URL: ${OMNI_WORKSPACE_BROKER_URL:-http://host.docker.internal:19098}
+  OMNI_WORKSPACE_SERVICE_KEY_FILE: /secrets/m4-workspace-service.key
+  OMNI_SANDBOX_ENDPOINT: http://sandbox-controller:8080
+  OMNI_SANDBOX_KEY_FILE: /secrets/m4-controller.key
+  OMNI_SANDBOX_IMAGE: ${OMNI_SANDBOX_IMAGE:-}
+  OMNI_SANDBOX_SNAPSHOT_ROOT: /var/lib/omniharness-m4-production/snapshots
+  OMNI_SANDBOX_MAX_COMMAND_SECONDS: "600"
+  OMNI_CHECKPOINT_SCHEMA: ${OMNI_CHECKPOINT_SCHEMA:-omniharness_checkpoints}
+
+x-application: &application
+  image: ${OMNI_RELEASE_IMAGE:-${OMNI_IMAGE:-omniharness:local}}
+  build:
+    context: .
+    dockerfile: Dockerfile
+  user: "${OMNI_UID:-1000}:${OMNI_GID:-1000}"
+  init: true
+  environment: *app-environment
+  extra_hosts:
+    - host.docker.internal:host-gateway
+  security_opt:
+    - no-new-privileges:true
+  cap_drop:
+    - ALL
+
+services:
+  sandbox-controller:
+    profiles: [tools]
+    image: docker.m.daocloud.io/opensandbox/server@sha256:25bebdcf1cf7724eb923faecbdbbf82d4038c6ab35c736151574726d14006f30
+    command: [--config, /config.toml]
+    env_file:
+      - path: ./.omniharness/m4-production/secrets/controller.env
+        required: false
+    ports: ["127.0.0.1:19096:8080"]
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ./.omniharness/m4-production/controller.toml:/config.toml:ro
+      - /var/lib/omniharness-m4-production/controller:/var/lib/opensandbox
+      - /var/lib/omniharness-m4-production/snapshots:/var/lib/omniharness-m4-production/snapshots:ro
+    healthcheck:
+      test: [CMD, python, -c, "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/health',timeout=3).read()"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+
+  postgres:
+    image: postgres:17-bookworm
+    environment:
+      POSTGRES_DB: omniharness
+      POSTGRES_USER: omniharness
+      POSTGRES_PASSWORD: ${OMNI_POSTGRES_PASSWORD:?Run the start script first}
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U omniharness -d omniharness"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+
+  init:
+    <<: *application
+    command: ["omniharness", "bootstrap"]
+    volumes:
+      - type: bind
+        source: ${OMNI_DEPLOY_DATA_DIR:-./.omniharness/data}
+        target: /data
+      - type: bind
+        source: ${OMNI_DEPLOY_SECRET_DIR:-./.omniharness/secrets}
+        target: /secrets
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+
+  api:
+    <<: *application
+    command: ["omniharness", "serve"]
+    ports:
+      - "127.0.0.1:${OMNI_PUBLIC_PORT:-8787}:8787"
+    volumes:
+      - type: bind
+        source: ${OMNI_DEPLOY_DATA_DIR:-./.omniharness/data}
+        target: /data
+      - type: bind
+        source: ${OMNI_DEPLOY_SECRET_DIR:-./.omniharness/secrets}
+        target: /secrets
+        read_only: true
+    depends_on:
+      init:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8787/health', timeout=3).read()"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
+    restart: unless-stopped
+
+  worker:
+    <<: *application
+    command: ["omniharness", "worker"]
+    volumes:
+      - type: bind
+        source: ${OMNI_DEPLOY_DATA_DIR:-./.omniharness/data}
+        target: /data
+      - type: bind
+        source: ${OMNI_DEPLOY_SECRET_DIR:-./.omniharness/secrets}
+        target: /secrets
+        read_only: true
+    depends_on:
+      init:
+        condition: service_completed_successfully
+    restart: unless-stopped
+
+volumes:
+  postgres-data:

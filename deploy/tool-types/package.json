@@ -1,0 +1,10 @@
+{
+  "name": "omniharness-tool-types",
+  "version": "1.0.0",
+  "private": true,
+  "dependencies": {
+    "typescript": "7.0.2",
+    "@types/node": "24.10.1",
+    "@typescript/typescript-linux-x64": "7.0.2"
+  }
+}

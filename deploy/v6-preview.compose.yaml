@@ -1,0 +1,109 @@
+name: omni-v6-preview
+
+x-environment: &environment
+  OMNI_DATABASE_URL: postgresql+psycopg://omniharness:${OMNI_V6_POSTGRES_PASSWORD:?Private preview environment required}@postgres:5432/omniharness
+  OMNI_DATA_DIR: /data
+  OMNI_SECRET_DIR: /secrets
+  OMNI_STATIC_DIR: /app/web/dist
+  OMNI_HOST: 0.0.0.0
+  OMNI_PORT: "8787"
+  OMNI_ALLOWED_ORIGINS: http://localhost:8788
+  OMNI_ENABLE_DEMO: "false"
+  OMNI_ENABLE_AGENT: "true"
+  OMNI_ENABLE_TOOLS: "true"
+  OMNI_V6_PREVIEW: "true"
+  OMNI_INTERACTIVE_PREVIEW: ${OMNI_INTERACTIVE_PREVIEW:-false}
+  OMNI_INSTANCE_ID: omni-v6-preview
+  OMNI_CHECKPOINT_SCHEMA: omniharness_v6_checkpoints
+  OMNI_WORKSPACE_BROKER_URL: http://host.docker.internal:19102
+  OMNI_WORKSPACE_SERVICE_KEY_FILE: /secrets/workspace-service.key
+  OMNI_SANDBOX_ENDPOINT: http://sandbox-controller:8080
+  OMNI_SANDBOX_KEY_FILE: /secrets/controller.key
+  OMNI_SANDBOX_IMAGE: ${OMNI_V6_TOOL_IMAGE:?Pinned tool image required}
+  OMNI_SANDBOX_SNAPSHOT_ROOT: /var/lib/omniharness-v6-preview/snapshots
+  OMNI_SANDBOX_MAX_COMMAND_SECONDS: "600"
+
+x-application: &application
+  image: ${OMNI_V6_IMAGE:?Candidate image required}
+  user: "1000:1000"
+  init: true
+  environment: *environment
+  extra_hosts: [host.docker.internal:host-gateway]
+  cap_drop: [ALL]
+  security_opt: [no-new-privileges:true]
+  logging:
+    driver: json-file
+    options: {max-size: 10m, max-file: "3"}
+
+services:
+  postgres:
+    image: docker.m.daocloud.io/library/postgres@sha256:665dc7b37ac52a17e298511414c21d23ffa4e6a6ef6225b3e5d59c7afb35e994
+    environment:
+      POSTGRES_DB: omniharness
+      POSTGRES_USER: omniharness
+      POSTGRES_PASSWORD: ${OMNI_V6_POSTGRES_PASSWORD:?Private preview environment required}
+    volumes: [preview-postgres:/var/lib/postgresql/data]
+    healthcheck:
+      test: [CMD-SHELL, pg_isready -U omniharness -d omniharness]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+
+  sandbox-controller:
+    image: docker.m.daocloud.io/opensandbox/server@sha256:25bebdcf1cf7724eb923faecbdbbf82d4038c6ab35c736151574726d14006f30
+    command: [--config, /config.toml]
+    env_file: ["${OMNI_V6_CONTROLLER_ENV:?Private controller environment required}"]
+    ports: ["127.0.0.1:19100:8080"]
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ${OMNI_V6_CONTROLLER_CONFIG:?Private controller profile required}:/config.toml:ro
+      - /var/lib/omniharness-v6-preview/controller:/var/lib/opensandbox
+      - /var/lib/omniharness-v6-preview/snapshots:/var/lib/omniharness-v6-preview/snapshots:ro
+    healthcheck:
+      test: [CMD, python, -c, "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/health',timeout=3).read()"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+
+  init:
+    <<: *application
+    command: [omniharness, bootstrap]
+    volumes:
+      - ${OMNI_V6_DATA_DIR:?Private data path required}:/data
+      - ${OMNI_V6_SECRET_DIR:?Private secret path required}:/secrets
+    depends_on:
+      postgres: {condition: service_healthy}
+    restart: "no"
+
+  api:
+    <<: *application
+    command: [omniharness, serve]
+    ports: ["127.0.0.1:8788:8787"]
+    volumes:
+      - ${OMNI_V6_DATA_DIR:?Private data path required}:/data
+      - ${OMNI_V6_SECRET_DIR:?Private secret path required}:/secrets:ro
+    depends_on:
+      postgres: {condition: service_healthy}
+      sandbox-controller: {condition: service_healthy}
+    healthcheck:
+      test: [CMD, python, -c, "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8787/health',timeout=3).read()"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+
+  worker:
+    <<: *application
+    command: [omniharness, worker]
+    volumes:
+      - ${OMNI_V6_DATA_DIR:?Private data path required}:/data
+      - ${OMNI_V6_SECRET_DIR:?Private secret path required}:/secrets:ro
+    depends_on:
+      postgres: {condition: service_healthy}
+      sandbox-controller: {condition: service_healthy}
+    restart: unless-stopped
+
+volumes:
+  preview-postgres:

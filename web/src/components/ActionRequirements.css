@@ -1,0 +1,10 @@
+.action-requirements { margin: 10px 0; padding: 12px 14px; border: 1px solid var(--border, #333); border-radius: 10px; background: rgba(255,255,255,.025); font-size: 13px; }
+.action-requirements summary { cursor: pointer; font-weight: 600; }
+.action-requirements summary span { color: #999; font-weight: 400; margin-left: 6px; }
+.action-requirements p { color: #a5a5aa; margin: 8px 0; line-height: 1.5; }
+.action-toggle { display: flex; align-items: center; gap: 8px; margin: 10px 0; }
+.action-entry { display: grid; gap: 7px; margin: 10px 0; padding: 10px; border: 1px solid #343438; border-radius: 8px; }
+.action-entry-head { display: flex; gap: 8px; }
+.action-entry input, .action-entry select { width: 100%; min-width: 0; padding: 7px 9px; color: inherit; background: #19191b; border: 1px solid #424247; border-radius: 6px; }
+.action-entry input[type="checkbox"] { width: auto; }
+.action-entry button, .action-add { color: inherit; background: transparent; border: 1px solid #424247; border-radius: 6px; padding: 6px 10px; cursor: pointer; }

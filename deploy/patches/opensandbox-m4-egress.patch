@@ -1,0 +1,62 @@
+--- a/components/egress/shutdown.go
++++ b/components/egress/shutdown.go
+@@ -38,11 +38,11 @@
+ func waitForShutdown(ctx context.Context, proxy *dnsproxy.Proxy, policySrv *http.Server, exemptDst []netip.Addr, applier nftApplier, mitm *mitmTransparent, broadcaster *events.Broadcaster, owners ...*policyServer) {
+ 	<-ctx.Done()
+ 	log.Infof("received shutdown signal; beginning graceful shutdown")
+-	// Retain ordinary enforcement for the experimental runtime owner even on
+-	// normal shutdown. Recovery can still arise during drain or session cleanup;
+-	// a check-then-delete sequence could otherwise widen an unknown packet state.
+-	// This does not install a normal-shutdown fence or promise restart safety.
+-	retainEnforcement := len(owners) > 0 && owners[0] != nil && owners[0].quarantine != nil
++	// OmniHarness: Docker workloads share this network namespace and may still
++	// be running when the sidecar receives SIGTERM. Keep kernel enforcement
++	// and DNS redirects until Docker destroys the shared namespace; deleting
++	// rules here creates a fail-open window before the interface disappears.
++	retainEnforcement := true
+ 
+ 	// Keep DNS and enforcement alive while accepted notifications finish.
+ 	if broadcaster != nil {
+@@ -75,7 +75,7 @@
+ 		mitm.shutdown(defaultMitmShutdownTimeout)
+ 	}
+ 	if retainEnforcement {
+-		log.Infof("experimental runtime shutdown: retaining enforcement; no restart/recovery guarantee")
++		log.Infof("OmniHarness shutdown: retaining enforcement until network namespace deletion")
+ 		return
+ 	}
+ 	iptables.RemoveRedirect(15353, exemptDst)
+--- /dev/null
++++ b/components/egress/omniharness_shutdown_test.go
+@@ -0,0 +1,31 @@
++// Copyright 2026 The OmniHarness Contributors
++// SPDX-License-Identifier: Apache-2.0
++package main
++
++import (
++    "context"
++    "os"
++    "path/filepath"
++    "testing"
++
++    "github.com/alibaba/opensandbox/egress/pkg/dnsproxy"
++    "github.com/stretchr/testify/require"
++)
++
++func TestOmniHarnessShutdownRetainsSharedNamespaceRules(t *testing.T) {
++    // No experimental quarantine owner: this is the ordinary Docker path.
++    dir := t.TempDir()
++    commands := filepath.Join(dir, "commands")
++    for _, name := range []string{"nft", "iptables", "ip6tables"} {
++        require.NoError(t, os.WriteFile(filepath.Join(dir, name),
++            []byte("#!/bin/sh\necho called >> '"+commands+"'\n"), 0700))
++    }
++    t.Setenv("PATH", dir)
++    applier := &quarantineCleanupNft{}
++    ctx, cancel := context.WithCancel(context.Background())
++    cancel()
++    waitForShutdown(ctx, &dnsproxy.Proxy{}, nil, nil, applier, nil, nil)
++    require.False(t, applier.removed, "the still-running workload must retain nft enforcement")
++    _, err := os.Stat(commands)
++    require.True(t, os.IsNotExist(err), "DNS redirect teardown must not widen the same namespace")
++}

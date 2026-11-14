@@ -1,0 +1,348 @@
+{
+  "schema_version": 1,
+  "dataset_id": "omniharness-optimization-code-v1",
+  "dataset_version": "1.0.0",
+  "scope": "3 development and 6 formal tasks, five fixed conditions, formal repeated three times",
+  "frozen_before_paid_execution": true,
+  "tasks": [
+    {
+      "id": "dev-high-import",
+      "split": "development",
+      "complexity": "high",
+      "language": "python",
+      "prompt": "修复分批导入apply_batch(path,rows,offset)。持久JSON形状records映射、offset整数，空文件不存在时初始{}与0。每行仅id非空str/value严格int。offset为非负int且等于已处理行数，前向gap拒绝；完全落在已处理范围内的重复批次验证格式后返回原状态，不写盘；部分重叠拒绝。同id相同value可重复，不同value冲突拒绝。整批先验证，冲突/非法不改变原文件；成功原子写入并offset增加行数。CLI state offset JSON_ROWS成功输出状态JSON和0，否则INVALID_BATCH与2。",
+      "write_allow": [
+        "cli.py",
+        "importer.py",
+        "state.py",
+        "validate.py"
+      ],
+      "workspace_files": [
+        "README.md",
+        "cli.py",
+        "importer.py",
+        "smoke.py",
+        "state.py",
+        "validate.py"
+      ],
+      "reference_files": [
+        "cli.py",
+        "importer.py",
+        "state.py",
+        "validate.py"
+      ],
+      "acceptance_file": "acceptance.py",
+      "requirement_groups": 5,
+      "files_sha256": {
+        "workspace/validate.py": "b97b9318a053b2885fc8153de4d9168b0b719a1107a89675bdf77632cf358a38",
+        "workspace/state.py": "9aa1bb968fa61857984f4f19c53fd55c9b89b6785bd0bed6c3c05c2b3161ea88",
+        "workspace/importer.py": "26dca98e6b440de4078fcbf6821f31defc486f56152395b778e99dc2709f6056",
+        "workspace/cli.py": "58d159443f8b36089557bd096fc49941295ac2fbfda12c0704b524cba33df59a",
+        "workspace/smoke.py": "6ff1aadbdea8ff542d77f8e9a6905376f53e9d3b045e715599d96757aa55189f",
+        "workspace/README.md": "7b0a418c1b9a05ba99c347a0d4380c752188cc80757d1bcf50cacadeeff2487c",
+        "reference/validate.py": "b97b9318a053b2885fc8153de4d9168b0b719a1107a89675bdf77632cf358a38",
+        "reference/state.py": "9aa1bb968fa61857984f4f19c53fd55c9b89b6785bd0bed6c3c05c2b3161ea88",
+        "reference/importer.py": "b2695ef51b6820c067298c38d4f1228e35beed2131d91ee6120265e94727e28f",
+        "reference/cli.py": "58d159443f8b36089557bd096fc49941295ac2fbfda12c0704b524cba33df59a",
+        "hidden/acceptance.py": "bf85701ad2916fd3cfd2347655ff5cc3a76033ba35268a43041ce6f231d5f65b"
+      }
+    },
+    {
+      "id": "dev-low-intervals",
+      "split": "development",
+      "complexity": "low",
+      "language": "python",
+      "prompt": "修复 merge_intervals(intervals)。返回排序后的闭区间并集；相接合并，嵌套不缩短外层；空输入返回空列表，不修改输入及内部列表。输入均为合法有限数区间。",
+      "write_allow": [
+        "candidate.py"
+      ],
+      "workspace_files": [
+        "README.md",
+        "candidate.py",
+        "smoke.py"
+      ],
+      "reference_files": [
+        "candidate.py"
+      ],
+      "acceptance_file": "acceptance.py",
+      "requirement_groups": 5,
+      "files_sha256": {
+        "workspace/candidate.py": "9cfabdefff90fdf13d84ebd89f327551bc5bef676d81a224925ec4c3cb899e63",
+        "workspace/smoke.py": "3a68100c8e600a92996165251d80df6779f8b0660cb6be89ab3fb3f74d27c885",
+        "workspace/README.md": "534c8dcf4795c8ed849a14044351de881644416796a6669a5987578c96eba336",
+        "reference/candidate.py": "e85a37120107b51e2d26d4460d9c6c9548dbf6a965354317c0d2b2514416705e",
+        "hidden/acceptance.py": "9e3571667c0060c5f7319d0c70624643b00496d7e86d44936187db63aed4bbcb"
+      }
+    },
+    {
+      "id": "dev-medium-config",
+      "split": "development",
+      "complexity": "medium",
+      "language": "python",
+      "prompt": "修复 merge_config(layers)，按从左到右优先级合并到默认 enabled=true,retries=3,label=local；显式false/0/空字符串保留。只准这3字段；enabled严格bool，retries严格int且0..9（bool不算int），label为str且长度≤30；未知键或非法值ValueError。不得修改defaults或输入。CLI接收若干JSON对象参数，成功输出sort_keys JSON和exit0，非法输入stderr INVALID_CONFIG和exit2且stdout空。",
+      "write_allow": [
+        "cli.py",
+        "config.py",
+        "values.py"
+      ],
+      "workspace_files": [
+        "README.md",
+        "cli.py",
+        "config.py",
+        "smoke.py",
+        "values.py"
+      ],
+      "reference_files": [
+        "cli.py",
+        "config.py",
+        "values.py"
+      ],
+      "acceptance_file": "acceptance.py",
+      "requirement_groups": 5,
+      "files_sha256": {
+        "workspace/values.py": "9b9d2427a6e9224908b3a443a170f04ce3a5cd4ac9b6bcf870d0c729fd94ca5c",
+        "workspace/config.py": "5a5a993264263153d1400c653865866b623272b15ca16b9ed0624cfe791e2a1e",
+        "workspace/cli.py": "a16d7f351eb680a154a05afb07dcbea2ba7442639e2414ab3ee38707533ab7b8",
+        "workspace/smoke.py": "79d405a9c4a738d599d3ac3d22fb4fe757c3c5a014764ddb5a5aa6cf551e39a5",
+        "workspace/README.md": "2768629deb5cca305dfc768c6a1a27ea74cb9121a049c44b61780b22b77f2acf",
+        "reference/values.py": "9b9d2427a6e9224908b3a443a170f04ce3a5cd4ac9b6bcf870d0c729fd94ca5c",
+        "reference/config.py": "6677d5323f7f1d4787578f4ac969c33e997f374b64bc7c6c7cba273a3db9767d",
+        "reference/cli.py": "a16d7f351eb680a154a05afb07dcbea2ba7442639e2414ab3ee38707533ab7b8",
+        "hidden/acceptance.py": "8a3ce98ca4b70e1679458cd0c42eb4c07135975e5e4b2796f54c02af5c7e9911"
+      }
+    },
+    {
+      "id": "formal-high-migration",
+      "split": "formal",
+      "complexity": "high",
+      "language": "python",
+      "prompt": "修复v1→v2 SQLite迁移及兼容API。v1 items(id INTEGER PRIMARY KEY,name TEXT,status TEXT)，user_version=1；v2 items(id,title TEXT NOT NULL,done INTEGER NOT NULL CHECK0/1)，user_version=2。open→0/done→1，保留id和Unicode名称；非法status或NULL name拒绝迁移ValueError且schema/版本/所有数据完整回滚。空库version0创建v2；重复迁移无变化；未知版本拒绝。storage.connect返回可用连接；list_items按id排序输出id/title/done(bool)；add_item拒绝空/非字符串并返回新id。compat.list_legacy保留id/name/status旧字典格式，add_legacy可用。CLI db list / db add TITLE，成功exit0输出JSON或id；错误exit2并stderr INVALID_STORE。legacy.py为公开fixture辅助也须保留seed行为。",
+      "write_allow": [
+        "cli.py",
+        "compat.py",
+        "legacy.py",
+        "migration.py",
+        "schema.py",
+        "storage.py"
+      ],
+      "workspace_files": [
+        "README.md",
+        "cli.py",
+        "compat.py",
+        "legacy.py",
+        "migration.py",
+        "schema.py",
+        "smoke.py",
+        "storage.py"
+      ],
+      "reference_files": [
+        "cli.py",
+        "compat.py",
+        "legacy.py",
+        "migration.py",
+        "schema.py",
+        "storage.py"
+      ],
+      "acceptance_file": "acceptance.py",
+      "requirement_groups": 5,
+      "files_sha256": {
+        "workspace/schema.py": "70b2c5dbdaefbd4cd0e0130b551162d5cc3a03d55e4158289407a2cc08bd700d",
+        "workspace/migration.py": "0529401ebddfe31d8a88f14ced3d9a9176a33b384ac11b55fe8135da6297d5c2",
+        "workspace/storage.py": "635d8f99606051a0de157111b266ea1c629bb8f90f3cd235aad145cafd05cc33",
+        "workspace/compat.py": "0ef63a6da79389acdd031fcfffcb40421d507e5c04dd77134f6f56bb88cabf5d",
+        "workspace/cli.py": "c6002100213f7a2f1e669f3fcd2d47cebf8eaf6837f5e39c615d22fb1aaf3d37",
+        "workspace/legacy.py": "ec6812eb270200349b75fae8a940be82b686b1a0811adcef1619b20fba8ed3ae",
+        "workspace/smoke.py": "c1fff25a8514d960dc4dbd0292d568cff6264fb403347502d8b45f1906d26715",
+        "workspace/README.md": "9ac19d8b26d0d3d3b69d2188ae80365eff01074c27ee83fe90898d129fd7672a",
+        "reference/schema.py": "70b2c5dbdaefbd4cd0e0130b551162d5cc3a03d55e4158289407a2cc08bd700d",
+        "reference/migration.py": "127ebbd778d137e74e8ffe86eeaac81369424637eb58ebc956c7bf93aef481a2",
+        "reference/storage.py": "635d8f99606051a0de157111b266ea1c629bb8f90f3cd235aad145cafd05cc33",
+        "reference/compat.py": "017d5f64d766c46ba7f6b5eeb961301d40f156c2882d735585e38660775e5b48",
+        "reference/cli.py": "c6002100213f7a2f1e669f3fcd2d47cebf8eaf6837f5e39c615d22fb1aaf3d37",
+        "reference/legacy.py": "ec6812eb270200349b75fae8a940be82b686b1a0811adcef1619b20fba8ed3ae",
+        "hidden/acceptance.py": "7ab0a4fb7ede943dd9a5cecc9bd18ce8927d1c1e48303b9b35d215ecd44a2e8b"
+      }
+    },
+    {
+      "id": "formal-high-report",
+      "split": "formal",
+      "complexity": "high",
+      "language": "typescript",
+      "prompt": "修复离线报告流水线。JSON为[{category:非空字符串,cents:非负安全整数}]；CSV严格header category,cents，标准引号/双引号转义/逗号/换行及CRLF，金额为无前导0的非负安全整数字符串。非法输入TypeError。summarize(rows,minimum=0)按cents>=minimum过滤、按category精确分组、统计count/totalCents，按JS字符串比较升序；minimum非法或累计溢出RangeError，输入不改动，原型属性名是普通键。toCSV固定header category,count,totalCents，必要转义，末尾恰好换行；空结果仅header。report(text,format,minimum)统一导出。node --experimental-strip-types cli.ts INPUT csv|json OUTPUT [MINIMUM] 成功exit0；失败exit2 stderr INVALID_REPORT且旧OUTPUT不变、不产生半份文件。",
+      "write_allow": [
+        "cli.ts",
+        "format.ts",
+        "parse.ts",
+        "pipeline.ts",
+        "stats.ts",
+        "types.ts"
+      ],
+      "workspace_files": [
+        "README.md",
+        "cli.ts",
+        "format.ts",
+        "parse.ts",
+        "pipeline.ts",
+        "smoke.ts",
+        "stats.ts",
+        "tsconfig.json",
+        "types.ts"
+      ],
+      "reference_files": [
+        "cli.ts",
+        "format.ts",
+        "parse.ts",
+        "pipeline.ts",
+        "stats.ts",
+        "types.ts"
+      ],
+      "acceptance_file": "acceptance.ts",
+      "requirement_groups": 5,
+      "files_sha256": {
+        "workspace/types.ts": "dbd42c1143a3a7aebd494163631a44c3d83ad4436b23e3a6183e35f8b823c664",
+        "workspace/parse.ts": "e599ed1a1d3042a5abe4a3d9c1c16f84325d1a37fd5371e42a1f37e1cc7da848",
+        "workspace/stats.ts": "7d1919ad7efeecb2e887aac1286e8ac318c81b789dcdcbca97d2c10060665657",
+        "workspace/format.ts": "4d250c91493774b7ab5d24647f3d939f22499e68cc900627163b4f8e1de61e9c",
+        "workspace/pipeline.ts": "72da413f40827e432579908cc57209e46a419c51063a33ad40ada4248ed26a44",
+        "workspace/cli.ts": "4c4e2434d1d8e66616ea9241598978689ae31e6f520760ff72711ef6054f0c1a",
+        "workspace/smoke.ts": "0321c52bb5bcf88c62ab6e2d8dbadfc8f5e5712673661809fec90f89a60c976e",
+        "workspace/README.md": "41e4d5ece7a35ba2a58faa2a51eb9ada03739772f5a65058ccd71dffb8f7005d",
+        "workspace/tsconfig.json": "c086364bd26afc1aaf5b7ad15ce10d764b717bc147546e53138845658ce270ab",
+        "reference/types.ts": "dbd42c1143a3a7aebd494163631a44c3d83ad4436b23e3a6183e35f8b823c664",
+        "reference/parse.ts": "8d9ebedf6be074d6b39f50328891b7e2b801e6588df042fdbc1e0e328f7b03c0",
+        "reference/stats.ts": "6bcf8f2f1e8fa8eed8813f2b87bf3c493b3600302db41171132303b8cebf24f7",
+        "reference/format.ts": "ea80db23aedc712a0477dadf15e08649912cfce015b96bb935aa2e4bab55e318",
+        "reference/pipeline.ts": "72da413f40827e432579908cc57209e46a419c51063a33ad40ada4248ed26a44",
+        "reference/cli.ts": "4c4e2434d1d8e66616ea9241598978689ae31e6f520760ff72711ef6054f0c1a",
+        "hidden/acceptance.ts": "bf2c407ef86399fe1efd24fc04dd75ad727193f4dfa95bd46aaac089a588ba72"
+      }
+    },
+    {
+      "id": "formal-low-duration",
+      "split": "formal",
+      "complexity": "low",
+      "language": "python",
+      "prompt": "实现 parse_duration(value: str)->float，返回毫秒。仅接受首尾可有空白、内部无空白的十进制非负数（整数或小数，必须有整数位）加 s 或 ms；允许 00.50s，拒绝符号、指数、NaN/Infinity、尾随文本和无单位。非法格式/非有限结果抛 ValueError，非str抛 TypeError。",
+      "write_allow": [
+        "candidate.py"
+      ],
+      "workspace_files": [
+        "README.md",
+        "candidate.py",
+        "smoke.py"
+      ],
+      "reference_files": [
+        "candidate.py"
+      ],
+      "acceptance_file": "acceptance.py",
+      "requirement_groups": 5,
+      "files_sha256": {
+        "workspace/candidate.py": "7e9e9c3059bf50d728c5244aa48511734474d509201f17bb3aeac19bb67f9e4e",
+        "workspace/smoke.py": "7caf19a0abd6be0f0b37d3f2e47d612df8054ed19674bfef4f4634fc9ff00472",
+        "workspace/README.md": "84e92be2a8351bf410f0a5735f032a7517e473afa970acc1a98667674a6165ca",
+        "reference/candidate.py": "09fd99e084f3237a995ca2a2a0d757649771948f77426374748adcbf7b3a5d7a",
+        "hidden/acceptance.py": "b4cc60c773ad26b172c432aa361ccba9e1664215c6627b2b3b98fc07c876b357"
+      }
+    },
+    {
+      "id": "formal-low-money",
+      "split": "formal",
+      "complexity": "low",
+      "language": "typescript",
+      "prompt": "实现 sumCents(values: readonly string[]): number。金额语法为非负十进制整数（除0外无前导0）及可选1或2位小数，不允许空白/符号/指数；以整数分精确求和。非法字符串或元素类型抛 TypeError；单项或累计超过 Number.MAX_SAFE_INTEGER 分抛 RangeError；空数组返回0，不修改输入。",
+      "write_allow": [
+        "candidate.ts"
+      ],
+      "workspace_files": [
+        "README.md",
+        "candidate.ts",
+        "smoke.ts",
+        "tsconfig.json"
+      ],
+      "reference_files": [
+        "candidate.ts"
+      ],
+      "acceptance_file": "acceptance.ts",
+      "requirement_groups": 5,
+      "files_sha256": {
+        "workspace/candidate.ts": "190625de7c4f77953bee411173a26dfae754c9be4a48863a154210749b2cae3b",
+        "workspace/smoke.ts": "eccf6bd8cd4b27cecf82c0aa160163e3527ebb66a8f78b548683469105673277",
+        "workspace/README.md": "75322201c230fd8f7863da4000c3be2b3aae662f51f7bd73361e1b2df2baf648",
+        "workspace/tsconfig.json": "c086364bd26afc1aaf5b7ad15ce10d764b717bc147546e53138845658ce270ab",
+        "reference/candidate.ts": "7951026d9f9e4187717c93e211b6c5e31dcd4dc43030df7102380a3514bc79aa",
+        "hidden/acceptance.ts": "577eb355009b04b15c4f034d1b99ccd0cd09d05eef39d23e85f75ef777732d54"
+      }
+    },
+    {
+      "id": "formal-medium-cache",
+      "split": "formal",
+      "complexity": "medium",
+      "language": "typescript",
+      "prompt": "修复泛型TTLCache(capacity,clock)。capacity必须非负整数，否则RangeError；ttl有限非负否则RangeError且原状态不变。now>=到期时失效。set覆盖同key并更新TTL/最近使用位置，ttl0立即删除旧key。get命中才更新LRU，不刷新TTL；has不改变LRU。容量溢出驱逐最久未使用的未过期项；容量0不存值。size只计未过期项。允许存undefined，has必须区分不存在；delete返回是否删除。不得真实sleep或取系统时间，必须使用注入clock。",
+      "write_allow": [
+        "cache.ts",
+        "clock.ts"
+      ],
+      "workspace_files": [
+        "README.md",
+        "cache.ts",
+        "clock.ts",
+        "smoke.ts",
+        "tsconfig.json"
+      ],
+      "reference_files": [
+        "cache.ts",
+        "clock.ts"
+      ],
+      "acceptance_file": "acceptance.ts",
+      "requirement_groups": 5,
+      "files_sha256": {
+        "workspace/clock.ts": "1703d93cf384fd9a8b4c38f536a15edd8524bb99b52ed5d21d4b16b6327933a6",
+        "workspace/cache.ts": "0c6fc8023b4507bfde7a22b4eb7064557dc9f4987d3d7e540ad6121856f8ccf8",
+        "workspace/smoke.ts": "735b668f5a2e3223adc04d33d8c9a774fa73d2b72baaf2cf64084d0f48e68976",
+        "workspace/README.md": "680ce99dec92b07d603df6636b6090fce93065e296aadf4813cbf16f75b8f569",
+        "workspace/tsconfig.json": "c086364bd26afc1aaf5b7ad15ce10d764b717bc147546e53138845658ce270ab",
+        "reference/clock.ts": "1703d93cf384fd9a8b4c38f536a15edd8524bb99b52ed5d21d4b16b6327933a6",
+        "reference/cache.ts": "04d9364ba567443fe5b859535cf3680ffce6b63a9bcf5e70364966f961924874",
+        "hidden/acceptance.ts": "c3acdc64dcb7e5865418dfc3e2221c7d8a270665c19ac3057268eacb6203ef2f"
+      }
+    },
+    {
+      "id": "formal-medium-orders",
+      "split": "formal",
+      "complexity": "medium",
+      "language": "python",
+      "prompt": "修复CSV订单库和CLI。CSV严格header id,customer,amount，每行三列，id/customer非空；id重复拒绝整批。标准CSV引号、逗号、换行及UTF-8必须可用。amount语法同非负整数及可选1/2小数位，除0无前导0；金额用整数分。summarize(text)返回按customer Unicode排序的[{customer,cents}]合计。非法输入ValueError，不部分返回。python cli.py input.csv output.json 成功exit0写UTF-8 JSON数组；非法输入exit2且stderr INVALID_ORDERS，目标原内容保持，目标不存在时不能创建。",
+      "write_allow": [
+        "aggregate.py",
+        "cli.py",
+        "orders.py"
+      ],
+      "workspace_files": [
+        "README.md",
+        "aggregate.py",
+        "cli.py",
+        "orders.py",
+        "smoke.py"
+      ],
+      "reference_files": [
+        "aggregate.py",
+        "cli.py",
+        "orders.py"
+      ],
+      "acceptance_file": "acceptance.py",
+      "requirement_groups": 5,
+      "files_sha256": {
+        "workspace/orders.py": "005f4f0d01abf0fbbda36b08c01cd85c2212a29c1611d1a21e4c6356c2a3704a",
+        "workspace/aggregate.py": "bcb9607d03f4b70574788f97d70ab635fe6f8803e60d15c5af7ba5e3724549ab",
+        "workspace/cli.py": "a94e7dfba1cc81f9e9ea6cf121e88e7950d6219f0080837872725a4dc0b8a4eb",
+        "workspace/smoke.py": "84de449fae070d6b6fc8e3ea313fced12112e06048153d0f986fa75c3b7eea89",
+        "workspace/README.md": "11b5d020573d322af8fa6f26b9cbe1a528cdf5518076362e6b0690e7009d0024",
+        "reference/orders.py": "4879bb7748aadccfec5f1f8df7fa9acf0dd31bf2a91a1c663a0cf68b328dd6a5",
+        "reference/aggregate.py": "32654ae4a0e7e4d54ec655786e5f8f41d51cab4517712efdd8815f72dae6e0c2",
+        "reference/cli.py": "a94e7dfba1cc81f9e9ea6cf121e88e7950d6219f0080837872725a4dc0b8a4eb",
+        "hidden/acceptance.py": "0606295751954bf25a679e708164946e44c54f97bffe4e96c5ab5311f9ae9d9d"
+      }
+    }
+  ]
+}

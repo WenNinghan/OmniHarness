@@ -1,0 +1,78 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="900" viewBox="0 0 1600 900" role="img" aria-labelledby="title desc">
+  <title id="title">OmniHarness 系统架构与执行边界</title>
+  <desc id="desc">从本地工作台到 API、Worker 与持久状态，再到用户自选模型和授权工作区；命令在过滤快照中执行，结果记录可供核对。</desc>
+  <defs>
+    <linearGradient id="background" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#0b1422"/><stop offset="1" stop-color="#102638"/></linearGradient>
+    <linearGradient id="panel" x1="0" y1="0" x2="0" y2="1"><stop stop-color="#172a3b"/><stop offset="1" stop-color="#132334"/></linearGradient>
+    <linearGradient id="teal" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#70e7d6"/><stop offset="1" stop-color="#50b9d6"/></linearGradient>
+    <pattern id="grid" width="36" height="36" patternUnits="userSpaceOnUse"><path d="M36 0H0V36" fill="none" stroke="#b7d6e2" stroke-opacity=".045"/></pattern>
+    <marker id="arrow" markerWidth="10" markerHeight="10" refX="7" refY="5" orient="auto"><path d="M2 2l5 3-5 3" fill="none" stroke="#77dbd4" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></marker>
+    <clipPath id="frame"><rect width="1600" height="900" rx="28"/></clipPath>
+  </defs>
+  <g clip-path="url(#frame)">
+    <rect width="1600" height="900" fill="url(#background)"/>
+    <rect width="1600" height="900" fill="url(#grid)"/>
+    <circle cx="1480" cy="40" r="320" fill="#5ed4cb" opacity=".035"/>
+    <circle cx="60" cy="880" r="260" fill="#668ad9" opacity=".04"/>
+    <g font-family="Inter,Segoe UI,Microsoft YaHei,PingFang SC,sans-serif">
+      <text x="64" y="66" fill="#78e4d4" font-size="19" font-weight="700" letter-spacing="3">OMNIHARNESS  /  SYSTEM MAP</text>
+      <text x="64" y="130" fill="#f1f7fa" font-size="46" font-weight="700">从想法，到可追溯的执行</text>
+      <text x="67" y="169" fill="#c5d5df" font-size="21">模型由你选择，任务按授权执行，过程与结果清晰可查。</text>
+      <rect x="1140" y="52" width="392" height="45" rx="22" fill="#143f43" stroke="#3b7978"/>
+      <circle cx="1165" cy="74" r="5" fill="#78e4d4"/>
+      <text x="1182" y="81" fill="#d2f2ed" font-size="17" font-weight="700" letter-spacing=".6">LOCAL FIRST   /   YOUR MODELS</text>
+
+      <rect x="58" y="225" width="327" height="477" rx="22" fill="url(#panel)" stroke="#385365"/>
+      <rect x="58" y="225" width="327" height="7" rx="3.5" fill="#74a8e7"/>
+      <text x="88" y="271" fill="#9bc6f6" font-size="19" font-weight="700" letter-spacing="1.4">01  /  INTERFACE</text>
+      <text x="88" y="324" fill="#f1f7fa" font-size="30" font-weight="700">本地工作台</text>
+      <text x="88" y="358" fill="#c5d5df" font-size="19">从一个界面开启协作</text>
+      <path d="M88 382H355" stroke="#385365"/>
+      <rect x="87" y="407" width="270" height="63" rx="12" fill="#1c3549"/>
+      <rect x="87" y="484" width="270" height="63" rx="12" fill="#1c3549"/>
+      <rect x="87" y="561" width="270" height="63" rx="12" fill="#1c3549"/>
+      <g font-size="22" font-weight="600" fill="#e7f1f6"><text x="109" y="447">选择模型与工作区</text><text x="109" y="524">发起任务与审批</text><text x="109" y="601">查看过程与结果</text></g>
+      <text x="89" y="667" fill="#c5d5df" font-size="19">浏览器配对 · 本机服务</text>
+
+      <rect x="435" y="225" width="516" height="477" rx="22" fill="url(#panel)" stroke="#44667a"/>
+      <rect x="435" y="225" width="516" height="7" rx="3.5" fill="url(#teal)"/>
+      <text x="467" y="271" fill="#83e4d7" font-size="19" font-weight="700" letter-spacing="1.4">02  /  TASK ENGINE</text>
+      <text x="467" y="324" fill="#f1f7fa" font-size="30" font-weight="700">任务执行与控制</text>
+      <text x="467" y="358" fill="#c5d5df" font-size="19">冻结配置与授权，按任务推进</text>
+      <rect x="466" y="397" width="205" height="113" rx="14" fill="#223c4c" stroke="#466a7b"/>
+      <rect x="714" y="397" width="205" height="113" rx="14" fill="#223c4c" stroke="#466a7b"/>
+      <text x="488" y="438" fill="#f1f7fa" font-size="23" font-weight="700">本地 API</text>
+      <text x="488" y="472" fill="#d0e2e7" font-size="20">请求 · 事件</text>
+      <text x="736" y="438" fill="#f1f7fa" font-size="23" font-weight="700">Worker</text>
+      <text x="736" y="472" fill="#d0e2e7" font-size="20">模型 · 工具</text>
+      <path d="M674 453H706" fill="none" stroke="#77dbd4" stroke-width="2.5" marker-end="url(#arrow)"/>
+      <rect x="466" y="536" width="453" height="111" rx="14" fill="#153d3c" stroke="#3d7774"/>
+      <text x="489" y="577" fill="#e2faf2" font-size="23" font-weight="700">持久状态与证据</text>
+      <text x="489" y="611" fill="#d6f1e9" font-size="20">任务 · 检查点 · 事件 · 工具日志</text>
+      <path d="M693 511V530" fill="none" stroke="#77dbd4" stroke-width="2.5" marker-end="url(#arrow)"/>
+      <text x="468" y="680" fill="#d0e0e8" font-size="19">未知结果保留待核对，不自动重发</text>
+
+      <rect x="1000" y="225" width="542" height="477" rx="22" fill="url(#panel)" stroke="#385365"/>
+      <rect x="1000" y="225" width="542" height="7" rx="3.5" fill="#b4a5f0"/>
+      <text x="1032" y="271" fill="#cec0ff" font-size="19" font-weight="700" letter-spacing="1.4">03  /  CONNECTIONS &amp; BOUNDARIES</text>
+      <rect x="1030" y="299" width="481" height="137" rx="15" fill="#263748" stroke="#53657b"/>
+      <circle cx="1063" cy="336" r="8" fill="#b6a6f2"/>
+      <text x="1084" y="343" fill="#f1f7fa" font-size="26" font-weight="700">用户自选模型服务</text>
+      <text x="1053" y="387" fill="#cbd8e2" font-size="19">请求发送至你选择的模型供应商</text>
+      <rect x="1030" y="454" width="481" height="190" rx="15" fill="#1b383f" stroke="#457374"/>
+      <circle cx="1063" cy="491" r="8" fill="#74ddd0"/>
+      <text x="1084" y="498" fill="#f1f7fa" font-size="26" font-weight="700">授权工作区与沙箱</text>
+      <text x="1053" y="540" fill="#d5eee9" font-size="21">文件修改：授权与版本校验</text>
+      <text x="1053" y="576" fill="#d5eee9" font-size="21">命令执行：过滤快照与独立沙箱</text>
+      <text x="1053" y="612" fill="#d5eee9" font-size="21">快照中的更改不自动写回原项目</text>
+      <text x="1033" y="680" fill="#d0e0e8" font-size="19">权限、审批与服务配置按需启用</text>
+
+      <path d="M388 466H426" fill="none" stroke="#77dbd4" stroke-width="2.5" marker-end="url(#arrow)"/>
+      <path d="M954 368H992" fill="none" stroke="#77dbd4" stroke-width="2.5" marker-end="url(#arrow)"/>
+      <path d="M954 548H992" fill="none" stroke="#77dbd4" stroke-width="2.5" marker-end="url(#arrow)"/>
+      <rect x="58" y="753" width="1484" height="86" rx="16" fill="#142e37" stroke="#345863"/>
+      <circle cx="91" cy="796" r="7" fill="#77dbd4"/>
+      <text x="112" y="803" fill="#d7eef0" font-size="22">执行记录帮助追溯；模型判断、工具结果与独立验收需要分别看待。</text>
+    </g>
+  </g>
+</svg>

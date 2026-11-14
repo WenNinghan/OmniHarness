@@ -1,0 +1,143 @@
+{
+  "schema_version": 1,
+  "source": "https://e-flowcode.cc/api/pricing",
+  "observed_at": "2026-11-09T02:27:19.787726Z",
+  "version": "a42d372ccf0b5dd13ecf71203521f9d2",
+  "valid_days": 7,
+  "endpoint": "https://e-flowcode.cc/v1",
+  "adapter_type": "openai-compatible",
+  "group_basis": "1_vip_china",
+  "basis": "highest_band_no_cache_before_group",
+  "unit": "site_reference_units_per_million_tokens",
+  "quotes": {
+    "deepseek-flash": {
+      "input": "3",
+      "output": "9",
+      "note": "固定取上海时间 08:00–22:00 的最高 2 倍档，不随当前时间降低。",
+      "cache_read": "0.3"
+    },
+    "deepseek-v4-pro": {
+      "input": "9",
+      "output": "27",
+      "note": "固定取上海时间 08:00–22:00 的最高 2 倍档，不随当前时间降低。",
+      "cache_read": "0.9"
+    },
+    "glm-5": {
+      "input": "4",
+      "output": "18",
+      "note": "当前公开报价只有一个档位。"
+    },
+    "glm-5.1": {
+      "input": "8",
+      "output": "28",
+      "note": "固定取输入不少于 32,000 tokens 的最高档。",
+      "cache_read": "1.6",
+      "cache_creation": "10"
+    },
+    "glm-5.2": {
+      "input": "8",
+      "output": "28",
+      "note": "当前公开报价只有一个档位。"
+    },
+    "glm-5.2-fast-preview": {
+      "input": "16",
+      "output": "56",
+      "note": "当前公开报价只有一个档位。"
+    },
+    "glm-5.3": {
+      "input": "8",
+      "output": "28",
+      "note": "当前公开报价只有一个档位。"
+    },
+    "glm-5.3-flash": {
+      "input": "0.8",
+      "output": "2.8",
+      "note": "当前公开报价只有一个档位。"
+    },
+    "glm-5.3-prime": {
+      "input": "16",
+      "output": "56",
+      "note": "当前公开报价只有一个档位。"
+    },
+    "hy3": {
+      "input": "1",
+      "output": "4",
+      "note": "当前公开报价只有一个档位。"
+    },
+    "hy4": {
+      "input": "6",
+      "output": "18",
+      "note": "当前公开报价只有一个档位。"
+    },
+    "kimi-k2.6": {
+      "input": "6.5",
+      "output": "27",
+      "note": "当前公开报价只有一个档位。"
+    },
+    "kimi-k2.7": {
+      "input": "6.5",
+      "output": "27",
+      "note": "当前公开报价只有一个档位。"
+    },
+    "kimi-k2.7-code": {
+      "input": "6.5",
+      "output": "27",
+      "note": "当前公开报价只有一个档位。"
+    },
+    "kimi-k2.8-preview": {
+      "input": "6.5",
+      "output": "27",
+      "note": "当前公开报价只有一个档位。"
+    },
+    "kimi-k3": {
+      "input": "2E+1",
+      "output": "1E+2",
+      "note": "当前公开报价只有一个档位。"
+    },
+    "kimi-k3.1-pro": {
+      "input": "13",
+      "output": "68",
+      "note": "当前公开报价只有一个档位。"
+    },
+    "mimo-v2.5-pro": {
+      "input": "0.348",
+      "output": "0.87",
+      "note": "当前公开报价只有一个档位。"
+    },
+    "MiniMax-M2.5": {
+      "input": "2.1",
+      "output": "8.4",
+      "note": "当前公开报价只有一个档位。"
+    },
+    "qwen3.5-plus": {
+      "input": "0.8",
+      "output": "4.8",
+      "note": "当前公开报价只有一个档位。"
+    },
+    "qwen3.6-plus": {
+      "input": "2",
+      "output": "12",
+      "note": "当前公开报价只有一个档位。"
+    },
+    "qwen3.7-max": {
+      "input": "12",
+      "output": "36",
+      "note": "当前公开报价只有一个档位。"
+    },
+    "qwen3.8-flash": {
+      "input": "0.8",
+      "output": "2.7",
+      "note": "当前公开报价只有一个档位。"
+    },
+    "qwen3.8-max": {
+      "input": "12",
+      "output": "36",
+      "note": "当前公开报价只有一个档位。"
+    },
+    "qwen3.8-max-0902": {
+      "input": "12",
+      "output": "36",
+      "note": "当前公开报价只有一个档位。"
+    }
+  }
+}

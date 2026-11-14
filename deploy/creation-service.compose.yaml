@@ -1,0 +1,77 @@
+# Explicit opt-in overlay. Do not add this to an existing release until its
+# isolated tests, storage provisioning and recovery rehearsal have passed.
+# Relative paths are resolved against the first Compose file (compose.yaml).
+services:
+  api:
+    environment:
+      OMNI_SANDBOX_CREATION_URL: http://sandbox-creation:19083
+      OMNI_SANDBOX_CREATION_SERVICE_ID: ${OMNI_SANDBOX_CREATION_SERVICE_ID:?Provision creation identity first}
+      OMNI_SANDBOX_CREATION_KEY_FILE: /secrets/m4-creation-service.key
+  worker:
+    environment:
+      OMNI_SANDBOX_CREATION_URL: http://sandbox-creation:19083
+      OMNI_SANDBOX_CREATION_SERVICE_ID: ${OMNI_SANDBOX_CREATION_SERVICE_ID:?Provision creation identity first}
+      OMNI_SANDBOX_CREATION_KEY_FILE: /secrets/m4-creation-service.key
+  sandbox-creation:
+    image: ${OMNI_RELEASE_IMAGE:-${OMNI_IMAGE:-omniharness:local}}
+    command: [python, -m, omniharness.sandbox_creation_service, serve]
+    user: "${OMNI_UID:-1000}:${OMNI_GID:-1000}"
+    group_add: ["${OMNI_CREATION_DOCKER_GID:?Explicit Docker socket group required}"]
+    init: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    read_only: true
+    tmpfs: [/tmp]
+    environment:
+      OMNI_DATABASE_URL: postgresql+psycopg://omniharness:${OMNI_POSTGRES_PASSWORD:?Database credential required}@postgres:5432/${OMNI_DATABASE_NAME:-omniharness}
+      OMNI_DATA_DIR: /data
+      OMNI_SECRET_DIR: /secrets
+      OMNI_INSTANCE_ID: ${OMNI_INSTANCE_ID:-local}
+      OMNI_SANDBOX_ENDPOINT: http://sandbox-controller:8080
+      OMNI_SANDBOX_KEY_FILE: /secrets/controller.key
+      OMNI_SANDBOX_IMAGE: ${OMNI_SANDBOX_IMAGE:?Pinned sandbox image required}
+      OMNI_SANDBOX_SNAPSHOT_ROOT: /var/lib/omniharness-m4-production/snapshots
+      OMNI_SANDBOX_MAX_COMMAND_SECONDS: "600"
+      OMNI_SANDBOX_CREATION_URL: http://sandbox-creation:19083
+      OMNI_SANDBOX_CREATION_SERVICE_ID: ${OMNI_SANDBOX_CREATION_SERVICE_ID:?Provision creation identity first}
+      OMNI_SANDBOX_CREATION_KEY_FILE: /secrets/creation.key
+      OMNI_CREATION_JOURNAL_PATH: /creation-journal/creation.sqlite
+      OMNI_CREATION_JOURNAL_ID: ${OMNI_CREATION_JOURNAL_ID:?Explicit journal identity required}
+      OMNI_CREATION_WITNESS_PATH: /creation-witness/witness.sqlite
+      OMNI_CREATION_WITNESS_ID: ${OMNI_CREATION_WITNESS_ID:?Explicit witness identity required}
+      OMNI_CREATION_ENGINE_ID: ${OMNI_CREATION_ENGINE_ID:?Pinned engine identity required}
+      OMNI_CREATION_MARKER_IMAGE: ${OMNI_CREATION_MARKER_IMAGE:?Pinned marker image required}
+      OMNI_CREATION_HOST: 0.0.0.0
+      OMNI_CREATION_PORT: "19083"
+    volumes:
+      - type: bind
+        source: ${OMNI_CREATION_JOURNAL_DIR:?Protected host journal directory required}
+        target: /creation-journal
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ${OMNI_CREATION_WITNESS_DIR:?Independent host witness directory required}
+        target: /creation-witness
+        bind:
+          create_host_path: false
+      - type: bind
+        source: /var/run/docker.sock
+        target: /var/run/docker.sock
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ${OMNI_DEPLOY_SECRET_DIR:-./.omniharness/secrets}/m4-controller.key
+        target: /secrets/controller.key
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ${OMNI_DEPLOY_SECRET_DIR:-./.omniharness/secrets}/m4-creation-service.key
+        target: /secrets/creation.key
+        read_only: true
+        bind:
+          create_host_path: false
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped

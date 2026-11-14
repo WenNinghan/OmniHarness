@@ -1,0 +1,20 @@
+{
+  "schema_version": 1,
+  "instance_id": "omni-m4-preview",
+  "application_url": "http://127.0.0.1:18792",
+  "service_key_file": "/mnt/g/EXAMPLE_PROJECT/.omniharness/m4-preview/secrets/workspace-service.key",
+  "python_executable": "/mnt/g/EXAMPLE_PROJECT/.venv/Scripts/python.exe",
+  "module_file": "G:\\EXAMPLE_PROJECT\\src\\omniharness\\workspace_io.py",
+  "framework_root": "G:\\EXAMPLE_PROJECT",
+  "native_storage_root": "G:\\EXAMPLE_PROJECT\\.omniharness\\m4-preview\\native",
+  "native_protected_roots": [
+    "G:\\EXAMPLE_PROJECT",
+    "G:\\EXAMPLE_PROJECT\\.omniharness\\m4-preview\\secrets",
+    "G:\\EXAMPLE_PROJECT\\.omniharness\\m4-preview\\data",
+    "G:\\EXAMPLE_PROJECT\\.omniharness\\m4-preview\\native"
+  ],
+  "mapped_native_storage_root": "/mnt/g/EXAMPLE_PROJECT/.omniharness/m4-preview/native",
+  "snapshot_root": "/var/lib/omniharness-example/m4/snapshots",
+  "bind_host": "172.17.0.1",
+  "port": 19092
+}

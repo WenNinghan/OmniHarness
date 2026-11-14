@@ -1,0 +1,629 @@
+--- a/components/execd/pkg/web/router.go
++++ b/components/execd/pkg/web/router.go
+@@ -16,6 +16,7 @@
+ 
+ import (
+ 	"net/http"
++	"strings"
+ 
+ 	"github.com/gin-gonic/gin"
+ 	"github.com/gorilla/websocket"
+@@ -23,6 +24,7 @@
+ 	"github.com/alibaba/opensandbox/execd/pkg/binding"
+ 	"github.com/alibaba/opensandbox/execd/pkg/flag"
+ 	"github.com/alibaba/opensandbox/execd/pkg/log"
++	"github.com/alibaba/opensandbox/execd/pkg/runtime"
+ 	"github.com/alibaba/opensandbox/execd/pkg/web/controller"
+ 	"github.com/alibaba/opensandbox/execd/pkg/web/model"
+ )
+@@ -41,22 +43,61 @@
+ }
+ 
+ func NewRouter(accessToken string) *gin.Engine {
++	// OmniHarness command-only variant; an empty token is never a public API.
++	if accessToken == "" {
++		panic("M4 execd requires a nonempty native access token")
++	}
+ 	gin.SetMode(gin.ReleaseMode)
+ 	r := gin.New()
+ 	r.Use(gin.Recovery())
++	// Docker Controller's server proxy reaches this same execd instance with
++	// /proxy/44772 prefixed. Re-enter only our own routes; never dial a port.
++	r.Use(func(ctx *gin.Context) {
++		path := ctx.Request.URL.Path
++		if !strings.HasPrefix(path, "/proxy/") {
++			ctx.Next()
++			return
++		}
++		const prefix = "/proxy/44772/"
++		if !strings.HasPrefix(path, prefix) {
++			ctx.AbortWithStatus(http.StatusNotFound)
++			return
++		}
++		target := "/" + strings.TrimPrefix(path, prefix)
++		if strings.HasPrefix(target, "/proxy/") || target == "/proxy" {
++			ctx.AbortWithStatus(http.StatusNotFound)
++			return
++		}
++		ctx.Request.URL.Path = target
++		ctx.Request.URL.RawPath = ""
++		// The outer unmatched route has a pending 404. Reset it before
++		// dispatch so lazy SSE writes inherit 200; inner errors may override.
++		ctx.Writer.WriteHeader(http.StatusOK)
++		r.HandleContext(ctx) // The same gate and token middleware run on the target.
++		ctx.Abort()
++	})
+ 	// The runtime-init gate runs before auth: pre-init business APIs answer
+ 	// a uniform 503 regardless of credentials, and the access-token check
+ 	// only sees requests that passed the gate.
+-	r.Use(logMiddleware(), otelHTTPMetricsMiddleware(), runtimeInitGate(), accessTokenMiddleware(accessToken), ProxyMiddleware())
++	r.Use(logMiddleware(), otelHTTPMetricsMiddleware(), runtimeInitGate(), accessTokenMiddleware(accessToken))
+ 
+ 	r.GET("/ping", controller.PingHandler)
+-	r.POST("/internal/init", withInit(func(c *controller.InitController) { c.Init() }))
++	// Runtime rebinding is not part of this fixed Docker command profile.
+ 	r.GET("/ready", withInit(func(c *controller.InitController) { c.Ready() }))
+ 
+-	registerFilesystemRoutes(r.Group(""))
+-	registerFilesystemRoutes(r.Group("/v1/filesystem/:uid/:gid", filesystemIdentityMiddleware()))
+-
+-	registerExecutionRoutes(r)
++	// No root filesystem, proxy, PTY, Jupyter or isolated-session surface.
++	r.POST("/command", withCode(func(c *controller.CodeInterpretingController) { c.RunCommand() }))
++	r.DELETE("/command", withCode(func(c *controller.CodeInterpretingController) { c.InterruptCommand() }))
++	r.GET("/command/status/:id", withCode(func(c *controller.CodeInterpretingController) { c.GetCommandStatus() }))
++	r.GET("/command/:id/logs", withCode(func(c *controller.CodeInterpretingController) { c.GetBackgroundCommandOutput() }))
++	r.GET("/omni/profile", func(ctx *gin.Context) {
++		report := runtime.ReportHardening()
++		ctx.JSON(http.StatusOK, gin.H{
++			"profile": "omniharness-m4-execd-v1", "workload_uid": 10001, "workload_gid": 10001,
++			"init_mode": report.InitMode == "pid1", "init_mode_name": report.InitMode, "signal_shield": report.SignalShield,
++			"cap_drop": report.CapDrop.State, "seccomp": report.Seccomp.State,
++		})
++	})
+ 	return r
+ }
+ 
+--- a/components/execd/pkg/runtime/command.go
++++ b/components/execd/pkg/runtime/command.go
+@@ -102,46 +102,11 @@
+ }
+ 
+ func buildCredential(uid, gid *uint32) (*syscall.Credential, error) {
+-	if uid == nil && gid == nil {
+-		return nil, nil //nolint:nilnil
+-	}
+-
+-	// An explicit uid/gid matching the identity execd already runs as needs
+-	// no credential switch: return nil so the launch stays on the plain exec
+-	// path, which is also what the no-uid request already does (#1802).
+-	if sameIdentityRequest(uid, gid) {
+-		return nil, nil //nolint:nilnil
+-	}
+-
+-	cred := &syscall.Credential{}
+-	if uid != nil {
+-		cred.Uid = *uid
+-		u, err := user.LookupId(strconv.FormatUint(uint64(*uid), 10))
+-		if err == nil {
+-			if gid == nil {
+-				primaryGid, err := strconv.ParseUint(u.Gid, 10, 32)
+-				if err == nil {
+-					cred.Gid = uint32(primaryGid)
+-				}
+-			}
+-
+-			gids, err := u.GroupIds()
+-			if err == nil {
+-				for _, g := range gids {
+-					id, err := strconv.ParseUint(g, 10, 32)
+-					if err == nil {
+-						cred.Groups = append(cred.Groups, uint32(id))
+-					}
+-				}
+-			}
+-		}
+-	}
+-
+-	if gid != nil {
+-		cred.Gid = *gid
+-	}
+-
+-	return cred, nil
++	// Server-side enforcement, including omitted IDs; SDK arguments are not a boundary.
++	if (uid != nil && *uid != 10001) || (gid != nil && *gid != 10001) {
++		return nil, fmt.Errorf("M4 commands require uid=10001 gid=10001")
++	}
++	return &syscall.Credential{Uid: 10001, Gid: 10001, Groups: []uint32{}}, nil
+ }
+ 
+ // sameIdentityRequest reports whether the requested uid/gid matches the
+--- a/components/execd/pkg/runtime/command_argv.go
++++ b/components/execd/pkg/runtime/command_argv.go
+@@ -55,7 +55,8 @@
+ 		return nil, err
+ 	}
+ 	// Derive PWD from cwd before applying explicit overrides.
+-	env := mergeEnvs((&exec.Cmd{Dir: cwd}).Environ(), overrides)
++	// Filter after overlays as well; reserved credentials cannot be reintroduced.
++	env := filterEnvBlacklist(mergeEnvs((&exec.Cmd{Dir: cwd}).Environ(), overrides))
+ 	var cmd *exec.Cmd
+ 	if request.Argv != nil {
+ 		cmd = nativeCommand(ctx, request.Argv, cwd, env)
+--- a/components/execd/pkg/runtime/hardening_linux.go
++++ b/components/execd/pkg/runtime/hardening_linux.go
+@@ -408,8 +408,9 @@
+ 
+ 	hardening.launcherPath = path
+ 	hardening.policy = &hardeningPolicy{
+-		uid:      uint32(os.Getuid()),
+-		gid:      uint32(os.Getgid()),
++		// The initial entrypoint uses this policy too, never daemon identity.
++		uid:      10001,
++		gid:      10001,
+ 		keepcaps: keepcaps,
+ 		stripEnv: isolation.ExecdConfigEnvBlacklist(),
+ 		seccomp:  seccompBPF,
+--- a/components/execd/main.go
++++ b/components/execd/main.go
+@@ -59,6 +59,20 @@
+ 	os.Exit(run())
+ }
+ 
++func validateM4Startup() error {
++	if os.Geteuid() != 0 || !flag.InitMode || flag.RuntimeInit || flag.ServerAccessToken == "" {
++		return fmt.Errorf("root supervisor, init mode, static nonempty token and disabled runtime-init are required")
++	}
++	return nil
++}
++
++func validateM4Hardening(report runtime.HardeningReport) error {
++	if report.InitMode != "pid1" || !report.SignalShield || report.CapDrop.State != "active" || report.Seccomp.State != "active" {
++		return fmt.Errorf("M4 hardening is unavailable; refusing to start command API")
++	}
++	return nil
++}
++
+ func run() int {
+ 	if len(os.Args) > 1 && os.Args[1] == web.FilesystemWorkerArg {
+ 		if err := web.RunFilesystemWorker(); err != nil {
+@@ -74,10 +88,21 @@
+ 
+ 	flag.InitFlags()
+ 	log.Init(flag.ServerLogLevel)
++	if err := validateM4Startup(); err != nil {
++		log.Error("M4 startup: %v", err)
++		return 1
++	}
++	// Keep the parsed token in memory, not in command/cwd environment expansion.
++	_ = os.Unsetenv("EXECD_ACCESS_TOKEN")
+ 
+ 	isoCfg, err := isolation.LoadConfig(flag.IsolationConfigPath)
+ 	if err != nil {
+ 		log.Error("isolation: config: %v", err)
++		return 1
++	}
++
++	if isoCfg.Hardening == nil || !isoCfg.Hardening.Enabled || len(isoCfg.Hardening.KeepCapabilities) != 0 {
++		log.Error("M4 requires hardening enabled with no retained workload capabilities")
+ 		return 1
+ 	}
+ 
+@@ -125,6 +150,11 @@
+ 		)
+ 		startInitEntrypoint = runtime.PrepareInitMode()
+ 		defer stopInitStartupSignals()
++	}
++
++	if err := validateM4Hardening(runtime.ReportHardening()); err != nil {
++		log.Error("M4 startup: %v", err)
++		return 1
+ 	}
+ 
+ 	ctrl := controller.InitCodeRunner()
+--- a/components/execd/native/launcher.c
++++ b/components/execd/native/launcher.c
+@@ -123,7 +123,7 @@
+     fprintf(stderr, "opensandbox-launcher: %s: %s\n", msg, strerror(err));
+ }
+ 
+-static void fail(int fd, const char *msg)
++static _Noreturn void fail(int fd, const char *msg)
+ {
+     if (fd >= 0)
+         (void)close(fd);
+@@ -292,7 +292,7 @@
+ {
+     int policy_fd;
+     struct policy_header hdr;
+-    uint32_t keepcaps[MAX_CAPS];
++    uint32_t keepcaps[MAX_CAPS] = {0};
+     uint32_t groups[MAX_CAPS];
+     char *env_names[MAX_CAPS];
+     int n_env;
+@@ -324,6 +324,12 @@
+         fail(policy_fd, "truncated policy header");
+     if (hdr.magic != POLICY_MAGIC || hdr.version != POLICY_VERSION)
+         fail(policy_fd, "invalid policy header");
++
++    /* OmniHarness: this binary only launches the fixed unprivileged profile. */
++    if (hdr.uid != 10001 || hdr.gid != 10001 || hdr.n_groups != 0 ||
++        hdr.n_keepcaps != 0 || hdr.seccomp_len == 0 ||
++        (hdr.flags & (FLAG_UID_DROP | FLAG_CAP_DROP)) != (FLAG_UID_DROP | FLAG_CAP_DROP))
++        fail(policy_fd, "M4 requires fixed identity, no capabilities and seccomp");
+ 
+     if (hdr.n_groups > MAX_CAPS)
+         fail(policy_fd, "too many supplementary groups");
+@@ -423,17 +429,23 @@
+ 
+     /* 1. Strip execd's credential/config env from the workload. */
+     for (int i = 0; i < n_env; i++) {
+-        unsetenv(env_names[i]);
++        if (unsetenv(env_names[i]) != 0) fail(-1, "cannot scrub workload environment");
+         free(env_names[i]);
+     }
+ 
+     if (hdr.flags & FLAG_CAP_DROP) {
+         /* 2. Keep caps across the identity change (step 5 clears them). */
+         if (prctl(PR_SET_KEEPCAPS, 1, 0, 0, 0) != 0)
+-            log_err("PR_SET_KEEPCAPS", errno);
++            fail(-1, "PR_SET_KEEPCAPS failed");
+ 
+         /* 3. Trim the bounding set while CAP_SETPCAP is still held. */
+-        for (int cap = 0; cap <= CAP_LAST_CAP; cap++) {
++        for (int cap = 0; cap < 64; cap++) {
++            int present = prctl(PR_CAPBSET_READ, (unsigned long)cap, 0, 0, 0);
++            if (present < 0) {
++                if (errno == EINVAL) break;
++                fail(-1, "cannot inspect capability bounding set");
++            }
++            if (present == 0) continue;
+             int keep = 0;
+ 
+             for (uint32_t k = 0; k < hdr.n_keepcaps; k++) {
+@@ -442,15 +454,14 @@
+                     break;
+                 }
+             }
+-            if (!keep && prctl(PR_CAPBSET_DROP, (unsigned long)cap, 0, 0, 0) != 0 &&
+-                errno != EPERM && errno != EINVAL)
+-                log_err("PR_CAPBSET_DROP", errno);
++            if (!keep && prctl(PR_CAPBSET_DROP, (unsigned long)cap, 0, 0, 0) != 0)
++                fail(-1, "cannot drop capability bounding set");
+         }
+     }
+ 
+     /* 4. No new privileges: nothing below can regain what the launcher drops. */
+     if (prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) != 0)
+-        log_err("PR_SET_NO_NEW_PRIVS", errno);
++        fail(-1, "PR_SET_NO_NEW_PRIVS failed");
+ 
+     if (hdr.flags & FLAG_UID_DROP) {
+         /* 5. Identity change: a foreign target that cannot be applied must
+@@ -481,10 +492,10 @@
+         for (uint32_t k = 0; k < hdr.n_keepcaps; k++)
+             kept |= (UINT64_C(1) << keepcaps[k]);
+         if (capset_all(kept) != 0)
+-            log_err("capset", errno);
++            fail(-1, "cannot clear workload capabilities");
+         for (uint32_t k = 0; k < hdr.n_keepcaps; k++) {
+             if (raise_ambient(keepcaps[k]) != 0)
+-                log_err("PR_CAP_AMBIENT_RAISE", errno);
++                fail(-1, "cannot apply ambient capabilities");
+         }
+     }
+ 
+@@ -498,9 +509,30 @@
+         prog.len = (unsigned short)(hdr.seccomp_len / sizeof(struct sock_filter));
+         prog.filter = filter;
+         if (prctl(PR_SET_SECCOMP, SECCOMP_MODE_FILTER, &prog) != 0)
+-            log_err("PR_SET_SECCOMP", errno);
++            fail(-1, "cannot apply seccomp filter");
+         free(filter);
+     }
++
++    /* M4 fail-closed verification of the actual child, not only daemon preflight. */
++    struct cap_header verify_header = {_LINUX_CAPABILITY_VERSION_3, 0};
++    struct cap_data verify_data[2];
++    memset(verify_data, 0, sizeof(verify_data));
++    if (syscall(SYS_capget, &verify_header, verify_data) != 0 ||
++        verify_data[0].effective || verify_data[0].permitted || verify_data[0].inheritable ||
++        verify_data[1].effective || verify_data[1].permitted || verify_data[1].inheritable)
++        fail(-1, "workload capability verification failed");
++    if (getuid() != 10001 || geteuid() != 10001 || getgid() != 10001 || getegid() != 10001 ||
++        getgroups(0, NULL) != 0 || prctl(PR_GET_NO_NEW_PRIVS, 0, 0, 0, 0) != 1 ||
++        prctl(PR_GET_SECCOMP, 0, 0, 0, 0) != SECCOMP_MODE_FILTER)
++        fail(-1, "workload identity or privilege-floor verification failed");
++    for (int cap = 0; cap < 64; cap++) {
++        int present = prctl(PR_CAPBSET_READ, (unsigned long)cap, 0, 0, 0);
++        if (present < 0 && errno == EINVAL) break;
++        if (present != 0 || prctl(PR_CAP_AMBIENT, PR_CAP_AMBIENT_IS_SET, (unsigned long)cap, 0, 0) != 0)
++            fail(-1, "workload bounding or ambient capabilities remain");
++    }
++    if (prctl(PR_CAPBSET_READ, 64, 0, 0, 0) >= 0 || errno != EINVAL)
++        fail(-1, "unsupported capability ABI");
+ 
+     /* 8. Exec the real workload. */
+     execvp(argv[3], &argv[3]);
+--- /dev/null
++++ b/components/execd/m4_startup_test.go
+@@ -0,0 +1,50 @@
++// Copyright 2026 OmniHarness contributors
++// SPDX-License-Identifier: Apache-2.0
++package main
++
++import (
++	"github.com/alibaba/opensandbox/execd/pkg/flag"
++	"github.com/alibaba/opensandbox/execd/pkg/runtime"
++	"testing"
++)
++
++func TestM4StartupRejectsMissingSecurityPrerequisites(t *testing.T) {
++	token, init, dynamic := flag.ServerAccessToken, flag.InitMode, flag.RuntimeInit
++	defer func() { flag.ServerAccessToken, flag.InitMode, flag.RuntimeInit = token, init, dynamic }()
++	flag.ServerAccessToken, flag.InitMode, flag.RuntimeInit = "", true, false
++	if validateM4Startup() == nil {
++		t.Fatal("empty token accepted")
++	}
++	flag.ServerAccessToken, flag.InitMode = "test-only-token", false
++	if validateM4Startup() == nil {
++		t.Fatal("non-init accepted")
++	}
++	flag.InitMode, flag.RuntimeInit = true, true
++	if validateM4Startup() == nil {
++		t.Fatal("runtime rebind mode accepted")
++	}
++}
++
++func TestM4HardeningRejectsEveryDegradedLayer(t *testing.T) {
++	good := runtime.HardeningReport{InitMode: "pid1", SignalShield: true,
++		CapDrop: runtime.LayerState{State: "active"}, Seccomp: runtime.LayerState{State: "active"}}
++	if err := validateM4Hardening(good); err != nil {
++		t.Fatal(err)
++	}
++	for _, kind := range []string{"init", "shield", "caps", "seccomp"} {
++		report := good
++		switch kind {
++		case "init":
++			report.InitMode = "none"
++		case "shield":
++			report.SignalShield = false
++		case "caps":
++			report.CapDrop.State = "degraded"
++		case "seccomp":
++			report.Seccomp.State = "disabled"
++		}
++		if validateM4Hardening(report) == nil {
++			t.Fatal("degraded state accepted:", kind)
++		}
++	}
++}
+--- /dev/null
++++ b/components/execd/pkg/runtime/m4_boundary_test.go
+@@ -0,0 +1,111 @@
++// Copyright 2026 OmniHarness contributors
++// SPDX-License-Identifier: Apache-2.0
++// Tests for the command-only adaptation of OpenSandbox BOM 25873227.
++package runtime
++
++import (
++	"context"
++	"github.com/alibaba/opensandbox/execd/pkg/isolation"
++	"os"
++	"os/exec"
++	"path/filepath"
++	"strings"
++	"testing"
++)
++
++func TestM4FixedCommandIdentity(t *testing.T) {
++	zero, user, other := uint32(0), uint32(10001), uint32(10002)
++	for _, pair := range [][2]*uint32{{nil, nil}, {&user, nil}, {nil, &user}, {&user, &user}} {
++		cred, err := buildCredential(pair[0], pair[1])
++		if err != nil || cred == nil || cred.Uid != 10001 || cred.Gid != 10001 || len(cred.Groups) != 0 {
++			t.Fatalf("identity not constrained: credential=%v error=%v", cred, err)
++		}
++	}
++	for _, pair := range [][2]*uint32{{&zero, nil}, {nil, &zero}, {&zero, &zero}, {&other, &user}} {
++		if _, err := buildCredential(pair[0], pair[1]); err == nil {
++			t.Fatal("accepted privileged identity")
++		}
++	}
++}
++
++func TestM4NativeLauncherEnforcesStateAndFailsClosed(t *testing.T) {
++	launcher := os.Getenv("M4_LAUNCHER_BINARY")
++	if launcher == "" {
++		t.Fatal("M4_LAUNCHER_BINARY is required for native enforcement tests")
++	}
++	filter, err := isolation.GenerateSeccompDenyBPF(nil)
++	if err != nil {
++		t.Fatal(err)
++	}
++	run := func(policy hardeningPolicy) (string, error) {
++		encoded, err := encodePolicy(&policy)
++		if err != nil {
++			return "", err
++		}
++		fd, err := createPolicyMemfd(encoded)
++		if err != nil {
++			return "", err
++		}
++		file := os.NewFile(uintptr(fd), "policy")
++		defer file.Close()
++		cmd := exec.Command(launcher, "3", "--", "/bin/sh", "-c", "echo WORKLOAD_RAN; id -u; cat /proc/self/status")
++		cmd.ExtraFiles = []*os.File{file}
++		output, err := cmd.CombinedOutput()
++		return string(output), err
++	}
++	good := hardeningPolicy{flags: flagUIDDrop | flagCapDrop, uid: 10001, gid: 10001, seccomp: filter}
++	output, err := run(good)
++	if err != nil {
++		t.Fatalf("valid native launch: %v %s", err, output)
++	}
++	for _, expected := range []string{"WORKLOAD_RAN\n10001\n", "CapInh:\t0000000000000000",
++		"CapPrm:\t0000000000000000", "CapEff:\t0000000000000000", "CapBnd:\t0000000000000000",
++		"CapAmb:\t0000000000000000", "NoNewPrivs:\t1"} {
++		if !strings.Contains(output, expected) {
++			t.Fatalf("missing actual enforced state: %s", expected)
++		}
++	}
++	for _, kind := range []string{"root", "no-floor", "invalid-seccomp"} {
++		policy := good
++		switch kind {
++		case "root":
++			policy.uid = 0
++		case "no-floor":
++			policy.flags = 0
++		case "invalid-seccomp":
++			policy.seccomp = []byte{255, 255, 0, 0, 0, 0, 0, 0}
++		}
++		output, err := run(policy)
++		if err == nil || strings.Contains(output, "WORKLOAD_RAN") {
++			t.Fatalf("%s reached workload: %v %s", kind, err, output)
++		}
++	}
++}
++
++func TestM4ReservedEnvironmentRemovedAfterEveryOverlay(t *testing.T) {
++	t.Setenv("EXECD_ACCESS_TOKEN", "test-only-daemon-token")
++	t.Setenv("JUPYTER_TOKEN", "test-only-jupyter-token")
++	file := filepath.Join(t.TempDir(), "envs")
++	if err := os.WriteFile(file, []byte("EXECD_ACCESS_TOKEN=file-value\nNORMAL=file-value\n"), 0600); err != nil {
++		t.Fatal(err)
++	}
++	t.Setenv("EXECD_ENVS", file)
++	cmd, err := prepareCommand(context.Background(), &ExecuteCodeRequest{
++		Argv: []string{"/bin/true"}, Envs: map[string]string{"EXECD_ACCESS_TOKEN": "request-value", "NORMAL": "request-value"},
++	})
++	if err != nil {
++		t.Fatal(err)
++	}
++	found := false
++	for _, value := range cmd.Env {
++		if strings.HasPrefix(value, "EXECD_") || strings.HasPrefix(value, "JUPYTER_TOKEN=") {
++			t.Fatal("reserved environment survived")
++		}
++		if value == "NORMAL=request-value" {
++			found = true
++		}
++	}
++	if !found {
++		t.Fatal("ordinary request environment was lost")
++	}
++}
+--- /dev/null
++++ b/components/execd/pkg/web/m4_routes_test.go
+@@ -0,0 +1,112 @@
++// Copyright 2026 OmniHarness contributors
++// SPDX-License-Identifier: Apache-2.0
++package web
++
++import (
++	"net/http"
++	"strings"
++	"testing"
++
++	"github.com/gin-gonic/gin"
++)
++
++func TestM4CommandOnlyRoutesAndProfileAuthentication(t *testing.T) {
++	withTestBinding(t, nil)
++	withRuntimeInit(t, false)
++	withManager(t, true)
++	router := NewRouter("test-only-token")
++	allowed := map[string]bool{
++		"GET /ping": true, "GET /ready": true, "GET /omni/profile": true,
++		"POST /command": true, "DELETE /command": true,
++		"GET /command/status/:id": true, "GET /command/:id/logs": true,
++	}
++	for _, route := range router.Routes() {
++		if !allowed[route.Method+" "+route.Path] {
++			t.Fatalf("unexpected API surface: %s %s", route.Method, route.Path)
++		}
++	}
++	for _, path := range []string{"/omni/profile", "/command/status/test-id"} {
++		for _, token := range []string{"", "wrong"} {
++			if got := doRequest(t, router, http.MethodGet, path, token).Code; got != 401 {
++				t.Fatalf("unauthenticated route: %s %d", path, got)
++			}
++		}
++	}
++	for _, path := range []string{"/internal/init", "/files/upload", "/session", "/code", "/pty", "/v1/isolated/session"} {
++		if got := doRequest(t, router, http.MethodPost, path, "test-only-token").Code; got != 404 {
++			t.Fatalf("disabled route exposed: %s %d", path, got)
++		}
++	}
++	response := doRequest(t, router, http.MethodGet, "/omni/profile", "test-only-token")
++	if response.Code != 200 || !strings.Contains(response.Body.String(), "omniharness-m4-execd-v1") {
++		t.Fatal("missing authenticated profile")
++	}
++}
++
++func TestM4EmptyTokenCannotConstructRouter(t *testing.T) {
++	defer func() {
++		if recover() == nil {
++			t.Fatal("empty-token server constructed")
++		}
++	}()
++	NewRouter("")
++}
++
++func TestM4FixedSelfProxyReusesRoutesAndAuthentication(t *testing.T) {
++	withTestBinding(t, nil)
++	withRuntimeInit(t, false)
++	withManager(t, true)
++	router := NewRouter("test-only-token")
++	for _, path := range []string{"/proxy/44772/ping", "/proxy/44772/ready"} {
++		if got := doRequest(t, router, http.MethodGet, path, "").Code; got != 200 {
++			t.Fatalf("SDK health path failed: %s %d", path, got)
++		}
++	}
++	for _, path := range []string{"/proxy/44772/omni/profile", "/proxy/44772/command/status/test"} {
++		for _, token := range []string{"", "wrong"} {
++			if got := doRequest(t, router, http.MethodGet, path, token).Code; got != 401 {
++				t.Fatalf("self proxy bypassed authentication: %s %d", path, got)
++			}
++		}
++	}
++	if got := doRequest(t, router, http.MethodPost, "/proxy/44772/command", "").Code; got != 401 {
++		t.Fatalf("proxied command bypassed authentication: %d", got)
++	}
++	profile := doRequest(t, router, http.MethodGet, "/proxy/44772/omni/profile", "test-only-token")
++	if profile.Code != 200 || !strings.Contains(profile.Body.String(), "omniharness-m4-execd-v1") {
++		t.Fatal("authenticated self proxy profile failed")
++	}
++	for _, path := range []string{
++		"/proxy/18080/policy", "/proxy/8080/ping", "/proxy/44772/proxy/44772/ping",
++		"/proxy/44772/internal/init", "/proxy/44772/files/upload", "/proxy/44772/code",
++	} {
++		if got := doRequest(t, router, http.MethodPost, path, "test-only-token").Code; got != 404 {
++			t.Fatalf("self proxy exposed forbidden surface: %s %d", path, got)
++		}
++	}
++}
++
++func TestM4FixedSelfProxyStreamsWithCorrectStatus(t *testing.T) {
++	withTestBinding(t, nil)
++	withRuntimeInit(t, false)
++	withManager(t, true)
++	router := NewRouter("test-only-token")
++	// Match command SSE's lazy header commit, without starting a workload.
++	router.POST("/m4-test-stream", func(ctx *gin.Context) {
++		ctx.Header("Content-Type", "text/event-stream")
++		_, _ = ctx.Writer.Write([]byte("event: output\ndata: ready\n\n"))
++		ctx.Writer.Flush()
++	})
++	for _, path := range []string{"/m4-test-stream", "/proxy/44772/m4-test-stream"} {
++		response := doRequest(t, router, http.MethodPost, path, "test-only-token")
++		if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), "data: ready") {
++			t.Fatalf("stream failed at %s: status=%d body=%q", path, response.Code, response.Body.String())
++		}
++		if got := doRequest(t, router, http.MethodPost, path, "").Code; got != http.StatusUnauthorized {
++			t.Fatalf("stream bypassed authentication: %s %d", path, got)
++		}
++	}
++	if got := doRequest(t, router, http.MethodPost, "/proxy/44772/not-a-route", "test-only-token").Code; got != http.StatusNotFound {
++		t.Fatalf("missing proxied route should still return 404: %d", got)
++	}
++}

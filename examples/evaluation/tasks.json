@@ -1,0 +1,1131 @@
+{
+  "schema_version": 1,
+  "dataset_id": "omniharness-m0-regression-20",
+  "dataset_version": "1.0.0",
+  "created_at": "2026-11-05",
+  "material_notice": "所有研究资料均为自编合成材料，不对应真实公司、产品、实验、报道或外部来源。代码为自编缺陷练习。",
+  "execution_status": "not_evaluated",
+  "runner_status": "M5 runner not implemented",
+  "tasks": [
+    {
+      "id": "research-001",
+      "category": "research",
+      "focus": [
+        "unit_conversion",
+        "numeric_verification",
+        "citations"
+      ],
+      "title": "统一耗电量单位",
+      "input": {
+        "prompt": "把三个节点的24小时耗电量统一为kWh，分别列出并计算总量，为每个原始数值标注来源行。",
+        "source_documents": [
+          {
+            "document_id": "R001-A",
+            "title": "合成能源记录",
+            "synthetic": true,
+            "lines": [
+              {
+                "line": 1,
+                "text": "节点甲24小时耗电2400 Wh。"
+              },
+              {
+                "line": 2,
+                "text": "节点乙24小时耗电1.8 kWh。"
+              },
+              {
+                "line": 3,
+                "text": "节点丙24小时耗电650 Wh。"
+              }
+            ]
+          }
+        ]
+      },
+      "acceptance_criteria": [
+        "Wh到kWh除以1000，不混用功率与能量。",
+        "保留全部三个节点，合计4.85 kWh。",
+        "引用精确到资料行号。"
+      ],
+      "verification_method": {
+        "type": "expected_fields_and_source_locator_review",
+        "instructions": "仅使用所附合成资料；将结果与 expected 对照，核对数值、状态和 document_id:line 引用。不得联网补成真实事实。浮点数容差为 1e-9，另有说明除外。"
+      },
+      "expected": {
+        "status": "PASS",
+        "unit": "kWh",
+        "items": [
+          {
+            "node": "甲",
+            "value": 2.4,
+            "evidence": [
+              "R001-A:1"
+            ]
+          },
+          {
+            "node": "乙",
+            "value": 1.8,
+            "evidence": [
+              "R001-A:2"
+            ]
+          },
+          {
+            "node": "丙",
+            "value": 0.65,
+            "evidence": [
+              "R001-A:3"
+            ]
+          }
+        ],
+        "total": 4.85
+      }
+    },
+    {
+      "id": "research-002",
+      "category": "research",
+      "focus": [
+        "denominator",
+        "numeric_verification"
+      ],
+      "title": "区分完成者与全体分母",
+      "input": {
+        "prompt": "报告完成率、完成者中的达标率、全体入组者中的达标率；写清每个分母，不能只给一个含糊的成功率。",
+        "source_documents": [
+          {
+            "document_id": "R002-A",
+            "title": "合成训练实验",
+            "synthetic": true,
+            "lines": [
+              {
+                "line": 1,
+                "text": "实验入组120人。"
+              },
+              {
+                "line": 2,
+                "text": "其中90人完成全部训练。"
+              },
+              {
+                "line": 3,
+                "text": "完成者中18人达到预先设定的标准；未完成者不计为达标。"
+              }
+            ]
+          }
+        ]
+      },
+      "acceptance_criteria": [
+        "三个比例分别为75%、20%、15%。",
+        "每个比例的分母和分子均可定位。",
+        "不把18/90写成全体入组者达标率。"
+      ],
+      "verification_method": {
+        "type": "expected_fields_and_source_locator_review",
+        "instructions": "仅使用所附合成资料；将结果与 expected 对照，核对数值、状态和 document_id:line 引用。不得联网补成真实事实。浮点数容差为 1e-9，另有说明除外。"
+      },
+      "expected": {
+        "completion_rate": {
+          "numerator": 90,
+          "denominator": 120,
+          "value": 0.75,
+          "evidence": [
+            "R002-A:1",
+            "R002-A:2"
+          ]
+        },
+        "success_among_completers": {
+          "numerator": 18,
+          "denominator": 90,
+          "value": 0.2,
+          "evidence": [
+            "R002-A:2",
+            "R002-A:3"
+          ]
+        },
+        "success_among_all": {
+          "numerator": 18,
+          "denominator": 120,
+          "value": 0.15,
+          "evidence": [
+            "R002-A:1",
+            "R002-A:3"
+          ]
+        }
+      }
+    },
+    {
+      "id": "research-003",
+      "category": "research",
+      "focus": [
+        "missing_evidence",
+        "unverified",
+        "evidence_scope"
+      ],
+      "title": "没有基准证据时保留未验证",
+      "input": {
+        "prompt": "判断“新系统比旧系统快50%”是否已有证据支持；区分宣传主张与测量结果，并列出缺少的信息。",
+        "source_documents": [
+          {
+            "document_id": "R003-A",
+            "title": "合成宣传页",
+            "synthetic": true,
+            "lines": [
+              {
+                "line": 1,
+                "text": "宣传语：新系统比旧系统快50%。"
+              },
+              {
+                "line": 2,
+                "text": "本页未给出测试输入、硬件、样本量或新系统测量值。"
+              }
+            ]
+          },
+          {
+            "document_id": "R003-B",
+            "title": "合成旧系统记录",
+            "synthetic": true,
+            "lines": [
+              {
+                "line": 1,
+                "text": "旧系统在一次独立测试中的中位耗时为200 ms。"
+              },
+              {
+                "line": 2,
+                "text": "记录未说明该测试与宣传页使用相同环境。"
+              }
+            ]
+          }
+        ]
+      },
+      "acceptance_criteria": [
+        "目标主张标记UNVERIFIED，不能从宣传语计算出新系统实测100 ms。",
+        "可以报告旧系统记录的200 ms，但不直接跨环境比较。",
+        "列出新系统测量、可比环境及测试协议缺口。"
+      ],
+      "verification_method": {
+        "type": "expected_fields_and_source_locator_review",
+        "instructions": "仅使用所附合成资料；将结果与 expected 对照，核对数值、状态和 document_id:line 引用。不得联网补成真实事实。浮点数容差为 1e-9，另有说明除外。"
+      },
+      "expected": {
+        "claim_status": "UNVERIFIED",
+        "measured_new_latency_ms": null,
+        "known_old_latency_ms": 200,
+        "old_measurement_evidence": [
+          "R003-B:1"
+        ],
+        "claim_evidence": [
+          "R003-A:1"
+        ],
+        "limitations_evidence": [
+          "R003-A:2",
+          "R003-B:2"
+        ],
+        "forbidden_inferences": [
+          "新系统实测耗时100 ms",
+          "50%提速已验证"
+        ]
+      }
+    },
+    {
+      "id": "research-004",
+      "category": "research",
+      "focus": [
+        "conflicting_sources",
+        "unit_conversion",
+        "uncertainty"
+      ],
+      "title": "保留两份来源的金额冲突",
+      "input": {
+        "prompt": "汇总虚构项目青栎的本轮资金金额。两份资料同等优先级，未提供澄清公告；请保留冲突，不自行选一个或求平均作为事实。",
+        "source_documents": [
+          {
+            "document_id": "R004-A",
+            "title": "合成项目简报",
+            "synthetic": true,
+            "lines": [
+              {
+                "line": 1,
+                "text": "项目青栎本轮资金为1200万元。"
+              },
+              {
+                "line": 2,
+                "text": "统计口径：本轮已到位资金。"
+              }
+            ]
+          },
+          {
+            "document_id": "R004-B",
+            "title": "合成出资方记录",
+            "synthetic": true,
+            "lines": [
+              {
+                "line": 1,
+                "text": "项目青栎本轮已到位资金为1500万元。"
+              },
+              {
+                "line": 2,
+                "text": "尚无进一步口径说明或更正。"
+              }
+            ]
+          }
+        ]
+      },
+      "acceptance_criteria": [
+        "状态为DISPUTED，两项金额与各自来源均保留。",
+        "规范化为12000000元和15000000元。",
+        "不得输出1350万元为最终确认金额。"
+      ],
+      "verification_method": {
+        "type": "expected_fields_and_source_locator_review",
+        "instructions": "仅使用所附合成资料；将结果与 expected 对照，核对数值、状态和 document_id:line 引用。不得联网补成真实事实。浮点数容差为 1e-9，另有说明除外。"
+      },
+      "expected": {
+        "status": "DISPUTED",
+        "confirmed_amount_yuan": null,
+        "alternatives": [
+          {
+            "amount_yuan": 12000000,
+            "evidence": [
+              "R004-A:1",
+              "R004-A:2"
+            ]
+          },
+          {
+            "amount_yuan": 15000000,
+            "evidence": [
+              "R004-B:1"
+            ]
+          }
+        ],
+        "resolution_needed": "补充澄清或可核对的原始记录"
+      }
+    },
+    {
+      "id": "research-005",
+      "category": "research",
+      "focus": [
+        "temporal_cutoff",
+        "citations"
+      ],
+      "title": "按截止时间回答版本状态",
+      "input": {
+        "prompt": "截至2026-10-04 23:59:59（Asia/Shanghai），合成软件Aurora Demo处于什么发布状态？后续资料可以列为截止后信息，但不能影响截至当日的结论。",
+        "source_documents": [
+          {
+            "document_id": "R005-A",
+            "title": "合成版本公告一",
+            "synthetic": true,
+            "lines": [
+              {
+                "line": 1,
+                "text": "Aurora Demo 0.9进入公开beta，尚未发布1.0。"
+              }
+            ],
+            "published_at": "2026-10-01T09:00:00+08:00"
+          },
+          {
+            "document_id": "R005-B",
+            "title": "合成版本公告二",
+            "synthetic": true,
+            "lines": [
+              {
+                "line": 1,
+                "text": "Aurora Demo 1.0正式发布。"
+              }
+            ],
+            "published_at": "2026-10-06T10:00:00+08:00"
+          }
+        ],
+        "cutoff": "2026-10-04T23:59:59+08:00"
+      },
+      "acceptance_criteria": [
+        "截至日期结论为公开beta、未发布1.0。",
+        "截止后公告标为excluded_after_cutoff，不倒灌未来信息。",
+        "使用给定时区和精确截止时间。"
+      ],
+      "verification_method": {
+        "type": "expected_fields_and_source_locator_review",
+        "instructions": "仅使用所附合成资料；将结果与 expected 对照，核对数值、状态和 document_id:line 引用。不得联网补成真实事实。浮点数容差为 1e-9，另有说明除外。"
+      },
+      "expected": {
+        "status_at_cutoff": "public_beta",
+        "version_at_cutoff": "0.9",
+        "evidence": [
+          "R005-A:1"
+        ],
+        "excluded_after_cutoff": [
+          "R005-B"
+        ],
+        "v1_released_at_cutoff": false
+      }
+    },
+    {
+      "id": "research-006",
+      "category": "research",
+      "focus": [
+        "citation_location",
+        "numeric_verification",
+        "relevance"
+      ],
+      "title": "把比较结论定位到具体行",
+      "input": {
+        "prompt": "比较甲乙测试的中位耗时与相对降幅。每个数值结论必须引用直接支持它的具体行，另说明可比环境的证据。",
+        "source_documents": [
+          {
+            "document_id": "R006-A",
+            "title": "合成测试甲",
+            "synthetic": true,
+            "lines": [
+              {
+                "line": 1,
+                "text": "甲三次测量为8、10、12 ms。"
+              },
+              {
+                "line": 2,
+                "text": "硬件编号DEMO-H1，输入集合DEMO-D1。"
+              },
+              {
+                "line": 3,
+                "text": "本页作者偏好蓝色图表。"
+              }
+            ]
+          },
+          {
+            "document_id": "R006-B",
+            "title": "合成测试乙",
+            "synthetic": true,
+            "lines": [
+              {
+                "line": 1,
+                "text": "乙三次测量为7、9、11 ms。"
+              },
+              {
+                "line": 2,
+                "text": "使用与甲相同的DEMO-H1硬件和DEMO-D1输入集合。"
+              }
+            ]
+          }
+        ]
+      },
+      "acceptance_criteria": [
+        "中位数甲10 ms，乙9 ms；相对甲减少10%。",
+        "数值引用R006-A:1和R006-B:1。",
+        "环境可比引用两份资料第2行，不能拿无关第3行作证据。"
+      ],
+      "verification_method": {
+        "type": "expected_fields_and_source_locator_review",
+        "instructions": "仅使用所附合成资料；将结果与 expected 对照，核对数值、状态和 document_id:line 引用。不得联网补成真实事实。浮点数容差为 1e-9，另有说明除外。"
+      },
+      "expected": {
+        "median_a_ms": 10,
+        "median_b_ms": 9,
+        "reduction_fraction": 0.1,
+        "measurement_evidence": [
+          "R006-A:1",
+          "R006-B:1"
+        ],
+        "comparability_evidence": [
+          "R006-A:2",
+          "R006-B:2"
+        ],
+        "irrelevant_lines": [
+          "R006-A:3"
+        ]
+      }
+    },
+    {
+      "id": "research-007",
+      "category": "research",
+      "focus": [
+        "entity_resolution",
+        "unverified",
+        "identity_isolation"
+      ],
+      "title": "同名主体不得合并",
+      "input": {
+        "prompt": "根据资料判断“星桥在北区设有办公室，并研发光子芯片”能否归为同一个主体的已证实描述；输出两个主体的独立记录。",
+        "source_documents": [
+          {
+            "document_id": "R007-A",
+            "title": "合成主体登记A",
+            "synthetic": true,
+            "lines": [
+              {
+                "line": 1,
+                "text": "显示名称：星桥；内部唯一编号DEMO-A。"
+              },
+              {
+                "line": 2,
+                "text": "办公室位于南区。"
+              },
+              {
+                "line": 3,
+                "text": "业务为光子芯片研发。"
+              }
+            ]
+          },
+          {
+            "document_id": "R007-B",
+            "title": "合成主体登记B",
+            "synthetic": true,
+            "lines": [
+              {
+                "line": 1,
+                "text": "显示名称：星桥；内部唯一编号DEMO-B。"
+              },
+              {
+                "line": 2,
+                "text": "办公室位于北区。"
+              },
+              {
+                "line": 3,
+                "text": "业务为库存管理软件。"
+              }
+            ]
+          }
+        ]
+      },
+      "acceptance_criteria": [
+        "按唯一编号保留两条记录，不按显示名称合并。",
+        "组合主张标记UNVERIFIED。",
+        "不推断两主体为母子公司或存在未记录的办公室。"
+      ],
+      "verification_method": {
+        "type": "expected_fields_and_source_locator_review",
+        "instructions": "仅使用所附合成资料；将结果与 expected 对照，核对数值、状态和 document_id:line 引用。不得联网补成真实事实。浮点数容差为 1e-9，另有说明除外。"
+      },
+      "expected": {
+        "combined_claim_status": "UNVERIFIED",
+        "entities": [
+          {
+            "id": "DEMO-A",
+            "name": "星桥",
+            "office": "南区",
+            "business": "光子芯片研发",
+            "evidence": [
+              "R007-A:1",
+              "R007-A:2",
+              "R007-A:3"
+            ]
+          },
+          {
+            "id": "DEMO-B",
+            "name": "星桥",
+            "office": "北区",
+            "business": "库存管理软件",
+            "evidence": [
+              "R007-B:1",
+              "R007-B:2",
+              "R007-B:3"
+            ]
+          }
+        ],
+        "relationship_between_entities": null
+      }
+    },
+    {
+      "id": "research-008",
+      "category": "research",
+      "focus": [
+        "deduplication",
+        "independent_evidence",
+        "weighted_aggregation"
+      ],
+      "title": "去除转载后的独立实验计数",
+      "input": {
+        "prompt": "统计独立实验数、去重后的参与者总数与成功数，并计算合并成功比例。转载不能算新实验。",
+        "source_documents": [
+          {
+            "document_id": "R008-A",
+            "title": "合成实验记录一",
+            "synthetic": true,
+            "lines": [
+              {
+                "line": 1,
+                "text": "实验ID ST-001：50人中46人成功。"
+              }
+            ]
+          },
+          {
+            "document_id": "R008-B",
+            "title": "合成转载",
+            "synthetic": true,
+            "lines": [
+              {
+                "line": 1,
+                "text": "本页转载ST-001的结果：50人中46人成功，没有新增实验。"
+              }
+            ]
+          },
+          {
+            "document_id": "R008-C",
+            "title": "合成实验记录二",
+            "synthetic": true,
+            "lines": [
+              {
+                "line": 1,
+                "text": "实验ID ST-002：30人中27人成功。"
+              },
+              {
+                "line": 2,
+                "text": "参与者与ST-001完全不重叠。"
+              }
+            ]
+          }
+        ]
+      },
+      "acceptance_criteria": [
+        "独立实验数为2，总人数80，成功数73。",
+        "合并比例73/80=91.25%，不是两个百分比的简单平均。",
+        "标记转载R008-B为重复证据，不等同于第三次独立验证。"
+      ],
+      "verification_method": {
+        "type": "expected_fields_and_source_locator_review",
+        "instructions": "仅使用所附合成资料；将结果与 expected 对照，核对数值、状态和 document_id:line 引用。不得联网补成真实事实。浮点数容差为 1e-9，另有说明除外。"
+      },
+      "expected": {
+        "unique_experiments": 2,
+        "unique_ids": [
+          "ST-001",
+          "ST-002"
+        ],
+        "participants": 80,
+        "successes": 73,
+        "pooled_success_fraction": 0.9125,
+        "duplicate_documents": [
+          "R008-B"
+        ],
+        "evidence": [
+          "R008-A:1",
+          "R008-C:1",
+          "R008-C:2"
+        ]
+      }
+    },
+    {
+      "id": "research-009",
+      "category": "research",
+      "focus": [
+        "missing_values",
+        "zero_vs_unknown",
+        "aggregation"
+      ],
+      "title": "缺失值不能当零失败",
+      "input": {
+        "prompt": "报告各站点失败率，并仅对样本量和失败数都已知的站点汇总。缺失值必须保留为未知。",
+        "source_documents": [
+          {
+            "document_id": "R009-A",
+            "title": "合成设备试验表",
+            "synthetic": true,
+            "lines": [
+              {
+                "line": 1,
+                "text": "站点A：10次测试，0次失败。"
+              },
+              {
+                "line": 2,
+                "text": "站点B：测试总次数和失败次数均未报告。"
+              },
+              {
+                "line": 3,
+                "text": "站点C：20次测试，2次失败。"
+              }
+            ]
+          }
+        ]
+      },
+      "acceptance_criteria": [
+        "A的失败率是0，B是null/UNVERIFIED，C是10%。",
+        "汇总仅含A和C：2/30。",
+        "不得把B当成0次失败的完整测量。"
+      ],
+      "verification_method": {
+        "type": "expected_fields_and_source_locator_review",
+        "instructions": "仅使用所附合成资料；将结果与 expected 对照，核对数值、状态和 document_id:line 引用。不得联网补成真实事实。浮点数容差为 1e-9，另有说明除外。"
+      },
+      "expected": {
+        "sites": [
+          {
+            "id": "A",
+            "failure_fraction": 0,
+            "status": "VERIFIED",
+            "evidence": [
+              "R009-A:1"
+            ]
+          },
+          {
+            "id": "B",
+            "failure_fraction": null,
+            "status": "UNVERIFIED",
+            "evidence": [
+              "R009-A:2"
+            ]
+          },
+          {
+            "id": "C",
+            "failure_fraction": 0.1,
+            "status": "VERIFIED",
+            "evidence": [
+              "R009-A:3"
+            ]
+          }
+        ],
+        "known_tests": 30,
+        "known_failures": 2,
+        "aggregate_failure_fraction": 0.06666666666666667,
+        "excluded_sites": [
+          "B"
+        ]
+      }
+    },
+    {
+      "id": "research-010",
+      "category": "research",
+      "focus": [
+        "counterexample",
+        "regression",
+        "evidence_scope",
+        "percentage_points"
+      ],
+      "title": "保留局部退化与未测试任务",
+      "input": {
+        "prompt": "审查“候选系统在全部任务上均提升”这句话。报告A和B的百分点变化、C的证据状态，并给出能被资料支持的替代描述。",
+        "source_documents": [
+          {
+            "document_id": "R010-A",
+            "title": "合成系统评测表",
+            "synthetic": true,
+            "lines": [
+              {
+                "line": 1,
+                "text": "任务A：基线准确率85%，候选系统88%。"
+              },
+              {
+                "line": 2,
+                "text": "任务B：基线准确率70%，候选系统66%。"
+              },
+              {
+                "line": 3,
+                "text": "任务C：尚未运行任何比较测试。"
+              }
+            ]
+          }
+        ]
+      },
+      "acceptance_criteria": [
+        "全面提升主张被B反例否定，判为FAIL。",
+        "A增加3个百分点、B下降4个百分点，不写成相对百分比变化。",
+        "C标为UNVERIFIED，结论保留局部退化。"
+      ],
+      "verification_method": {
+        "type": "expected_fields_and_source_locator_review",
+        "instructions": "仅使用所附合成资料；将结果与 expected 对照，核对数值、状态和 document_id:line 引用。不得联网补成真实事实。浮点数容差为 1e-9，另有说明除外。"
+      },
+      "expected": {
+        "universal_improvement_claim": "FAIL",
+        "delta_percentage_points": {
+          "A": 3,
+          "B": -4
+        },
+        "task_c_status": "UNVERIFIED",
+        "counterexample_evidence": [
+          "R010-A:2"
+        ],
+        "allowed_summary": "候选系统在任务A上提高3个百分点，在任务B上下降4个百分点；任务C尚未验证。",
+        "evidence": [
+          "R010-A:1",
+          "R010-A:2",
+          "R010-A:3"
+        ]
+      }
+    },
+    {
+      "id": "python-001",
+      "category": "code",
+      "language": "python",
+      "focus": [
+        "empty_input",
+        "nested_intervals",
+        "boundary_overlap",
+        "immutability"
+      ],
+      "title": "合并闭区间时处理空输入和嵌套",
+      "input": {
+        "prompt": "修复merge_intervals。输入是合法整数闭区间；重叠或端点相接时合并，输出按起点升序。不得修改输入列表或其子列表。",
+        "filename": "candidate.py",
+        "source_code": "def merge_intervals(intervals):\n    intervals.sort()\n    result = [list(intervals[0])]\n    for start, end in intervals[1:]:\n        if start < result[-1][1]:\n            result[-1][1] = end\n        else:\n            result.append([start, end])\n    return result\n",
+        "constraints": [
+          "保持给定导出函数名称与返回形状。",
+          "不增加第三方运行依赖。",
+          "不得删除或弱化测试断言。"
+        ]
+      },
+      "acceptance_criteria": [
+        "空输入返回空列表。",
+        "嵌套区间不缩短已有终点；相接闭区间合并。",
+        "输入数据在调用前后相同。"
+      ],
+      "verification_method": {
+        "type": "python_assertions",
+        "test_code": "from copy import deepcopy\nfrom candidate import merge_intervals\nassert merge_intervals([]) == []\nassert merge_intervals([[1, 5], [2, 3]]) == [[1, 5]]\nassert merge_intervals([[1, 2], [2, 4]]) == [[1, 4]]\nassert merge_intervals([[5, 6], [1, 2], [3, 4]]) == [[1, 2], [3, 4], [5, 6]]\nassert merge_intervals([[2, 2], [2, 2]]) == [[2, 2]]\noriginal = [[5, 8], [1, 3], [2, 6]]\nsaved = deepcopy(original)\nassert merge_intervals(original) == [[1, 8]]\nassert original == saved\n"
+      },
+      "expected": {
+        "empty_result": [],
+        "nested_result": [
+          [
+            1,
+            5
+          ]
+        ],
+        "touching_result": [
+          [
+            1,
+            4
+          ]
+        ],
+        "mutates_input": false
+      }
+    },
+    {
+      "id": "python-002",
+      "category": "code",
+      "language": "python",
+      "focus": [
+        "off_by_one",
+        "empty_input",
+        "validation"
+      ],
+      "title": "分块时保留尾块并拒绝非法尺寸",
+      "input": {
+        "prompt": "修复chunks。输入为列表和整数size；size必须大于0，否则即使列表为空也抛ValueError。返回连续分块，保留不足size的最后一块，不能修改输入。",
+        "filename": "candidate.py",
+        "source_code": "def chunks(items, size):\n    return [items[i:i + size] for i in range(0, len(items) - size, size)]\n",
+        "constraints": [
+          "保持给定导出函数名称与返回形状。",
+          "不增加第三方运行依赖。",
+          "不得删除或弱化测试断言。"
+        ]
+      },
+      "acceptance_criteria": [
+        "整除、不整除、size大于列表长度均正确。",
+        "size<=0统一抛ValueError。",
+        "空输入在合法size下返回空列表。"
+      ],
+      "verification_method": {
+        "type": "python_assertions",
+        "test_code": "from unittest import TestCase\nfrom candidate import chunks\ncheck = TestCase()\nassert chunks([1, 2, 3, 4, 5], 2) == [[1, 2], [3, 4], [5]]\nassert chunks([1, 2, 3, 4], 2) == [[1, 2], [3, 4]]\nassert chunks([1, 2], 5) == [[1, 2]]\nassert chunks([], 3) == []\ncheck.assertRaises(ValueError, chunks, [], 0)\ncheck.assertRaises(ValueError, chunks, [1], -1)\noriginal = [1, 2, 3]\nchunks(original, 2)\nassert original == [1, 2, 3]\n"
+      },
+      "expected": {
+        "tail_is_preserved": true,
+        "invalid_size_exception": "ValueError",
+        "mutates_input": false
+      }
+    },
+    {
+      "id": "python-003",
+      "category": "code",
+      "language": "python",
+      "focus": [
+        "unit_conversion",
+        "strict_parsing",
+        "nonfinite_values"
+      ],
+      "title": "严格解析秒和毫秒",
+      "input": {
+        "prompt": "修复parse_duration_ms，返回毫秒浮点数。允许首尾空格、非负普通十进制数字（可含小数）和大小写敏感的ms或s单位；不接受符号、科学记数法、NaN、Infinity、缺单位或其他单位。非法输入抛ValueError。",
+        "filename": "candidate.py",
+        "source_code": "def parse_duration_ms(value):\n    number = float(value.rstrip(\"ms\"))\n    return number\n",
+        "constraints": [
+          "保持给定导出函数名称与返回形状。",
+          "不增加第三方运行依赖。",
+          "不得删除或弱化测试断言。"
+        ]
+      },
+      "acceptance_criteria": [
+        "s乘1000，ms保持不变。",
+        "使用完整输入匹配，不能接受部分解析。",
+        "返回有限非负数字。"
+      ],
+      "verification_method": {
+        "type": "python_assertions",
+        "test_code": "from unittest import TestCase\nfrom candidate import parse_duration_ms\ncheck = TestCase()\nassert parse_duration_ms(\"1500ms\") == 1500.0\nassert parse_duration_ms(\"1.5s\") == 1500.0\nassert parse_duration_ms(\" 0.25s \") == 250.0\nassert parse_duration_ms(\"0ms\") == 0.0\nfor value in (\"-1s\", \"+1s\", \"1e3s\", \"nanms\", \"Infinitys\", \"3m\", \"20\", \"1.2.3s\", \"1S\"):\n    check.assertRaises(ValueError, parse_duration_ms, value)\n"
+      },
+      "expected": {
+        "one_point_five_seconds_ms": 1500.0,
+        "quarter_second_ms": 250.0,
+        "invalid_exception": "ValueError"
+      }
+    },
+    {
+      "id": "python-004",
+      "category": "code",
+      "language": "python",
+      "focus": [
+        "stable_deduplication",
+        "missing_values",
+        "falsy_identifier"
+      ],
+      "title": "按ID去重时保留首条和无ID行",
+      "input": {
+        "prompt": "修复dedupe_by_id。ID为整数或字符串（不包含bool）；0是有效ID，字符串0与整数0不同。相同ID保留首条；缺少id或id为None的每一行都保留。保持输入顺序，不能修改任何行。",
+        "filename": "candidate.py",
+        "source_code": "def dedupe_by_id(rows):\n    return list({row[\"id\"]: row for row in rows}.values())\n",
+        "constraints": [
+          "保持给定导出函数名称与返回形状。",
+          "不增加第三方运行依赖。",
+          "不得删除或弱化测试断言。"
+        ]
+      },
+      "acceptance_criteria": [
+        "重复ID保留第一条而非最后一条。",
+        "未知ID行彼此不合并。",
+        "0和字符串0作为不同ID。"
+      ],
+      "verification_method": {
+        "type": "python_assertions",
+        "test_code": "from copy import deepcopy\nfrom candidate import dedupe_by_id\nrows = [{\"id\": 1, \"v\": \"first\"}, {\"id\": 1, \"v\": \"last\"}, {\"v\": \"missing-a\"}, {\"v\": \"missing-b\"}, {\"id\": None, \"v\": \"none-a\"}, {\"id\": None, \"v\": \"none-b\"}, {\"id\": 0}, {\"id\": \"0\"}]\nsaved = deepcopy(rows)\nassert dedupe_by_id(rows) == [rows[i] for i in (0, 2, 3, 4, 5, 6, 7)]\nassert rows == saved\nassert dedupe_by_id([]) == []\n"
+      },
+      "expected": {
+        "kept_input_indexes": [
+          0,
+          2,
+          3,
+          4,
+          5,
+          6,
+          7
+        ],
+        "unknown_ids_are_independent": true,
+        "mutates_input": false
+      }
+    },
+    {
+      "id": "python-005",
+      "category": "code",
+      "language": "python",
+      "focus": [
+        "off_by_one",
+        "numeric_precision",
+        "empty_input"
+      ],
+      "title": "只计算完整滑动窗口",
+      "input": {
+        "prompt": "修复moving_average。values为有限数字列表，window为正整数；返回所有连续完整窗口的均值，窗口长于序列时返回[]，window<=0抛ValueError。输入不得修改。",
+        "filename": "candidate.py",
+        "source_code": "def moving_average(values, window):\n    return [sum(values[i - window:i]) / window for i in range(window, len(values))]\n",
+        "constraints": [
+          "保持给定导出函数名称与返回形状。",
+          "不增加第三方运行依赖。",
+          "不得删除或弱化测试断言。"
+        ]
+      },
+      "acceptance_criteria": [
+        "结果数为max(0,n-window+1)。",
+        "window=1与window=n均正确。",
+        "浮点结果按1e-12绝对容差判断。"
+      ],
+      "verification_method": {
+        "type": "python_assertions",
+        "test_code": "from math import isclose\nfrom unittest import TestCase\nfrom candidate import moving_average\ncheck = TestCase()\nassert moving_average([1, 2, 3], 2) == [1.5, 2.5]\nassert moving_average([1, 2, 3], 3) == [2.0]\nassert moving_average([1, 2], 1) == [1.0, 2.0]\nassert moving_average([1], 2) == []\nassert moving_average([], 1) == []\nactual = moving_average([0.1, 0.2, 0.3], 2)\nassert len(actual) == 2\nassert all(isclose(a, b, rel_tol=0, abs_tol=1e-12) for a, b in zip(actual, [0.15, 0.25]))\ncheck.assertRaises(ValueError, moving_average, [], 0)\ncheck.assertRaises(ValueError, moving_average, [1], -2)\noriginal = [3, 1, 2]\nmoving_average(original, 2)\nassert original == [3, 1, 2]\n"
+      },
+      "expected": {
+        "window_two_result": [
+          1.5,
+          2.5
+        ],
+        "invalid_window_exception": "ValueError",
+        "mutates_input": false
+      }
+    },
+    {
+      "id": "typescript-001",
+      "category": "code",
+      "language": "typescript",
+      "focus": [
+        "numeric_sort",
+        "immutability",
+        "empty_input"
+      ],
+      "title": "数字排序不得改动调用方数组",
+      "input": {
+        "prompt": "修复numericSort。输入为有限数字数组，按数值升序返回新数组，包含负数和重复项时也正确，不能修改原数组。",
+        "filename": "candidate.ts",
+        "source_code": "export function numericSort(values: number[]): number[] {\n  return values.sort();\n}\n",
+        "constraints": [
+          "保持给定导出函数名称与返回形状。",
+          "不增加第三方运行依赖。",
+          "不得删除或弱化测试断言。"
+        ]
+      },
+      "acceptance_criteria": [
+        "数值顺序而非字典序。",
+        "空数组与重复值保留。",
+        "输出不是输入同一个数组对象。"
+      ],
+      "verification_method": {
+        "type": "typescript_node_assertions",
+        "test_code": "import assert from \"node:assert/strict\";\nimport { numericSort } from \"./candidate.js\";\nassert.deepEqual(numericSort([10, 2, 1]), [1, 2, 10]);\nassert.deepEqual(numericSort([-1, -10, 0, 2]), [-10, -1, 0, 2]);\nassert.deepEqual(numericSort([2, 2, 1]), [1, 2, 2]);\nassert.deepEqual(numericSort([]), []);\nconst original = [3, 1, 2];\nconst result = numericSort(original);\nassert.deepEqual(original, [3, 1, 2]);\nassert.notEqual(result, original);\n"
+      },
+      "expected": {
+        "example_result": [
+          1,
+          2,
+          10
+        ],
+        "mutates_input": false,
+        "returns_fresh_array": true
+      }
+    },
+    {
+      "id": "typescript-002",
+      "category": "code",
+      "language": "typescript",
+      "focus": [
+        "decimal_precision",
+        "strict_parsing",
+        "overflow"
+      ],
+      "title": "以整数分累加价格",
+      "input": {
+        "prompt": "修复totalCents。每个价格为非负十进制字符串，允许整数、1位或2位小数；不允许符号、空格、指数、尾随字符或3位小数。精确换算为分后求和，返回安全整数；格式错误抛TypeError，任何单项或总和超出Number.MAX_SAFE_INTEGER抛RangeError。空数组为0。",
+        "filename": "candidate.ts",
+        "source_code": "export function totalCents(prices: string[]): number {\n  return Math.round(prices.reduce((sum, value) => sum + parseFloat(value), 0) * 100);\n}\n",
+        "constraints": [
+          "保持给定导出函数名称与返回形状。",
+          "不增加第三方运行依赖。",
+          "不得删除或弱化测试断言。"
+        ]
+      },
+      "acceptance_criteria": [
+        "先进行严格格式校验，不能依赖parseFloat部分解析。",
+        "精确到分，禁止静默四舍五入非法输入。",
+        "显式检查单项与累加后的安全整数范围。"
+      ],
+      "verification_method": {
+        "type": "typescript_node_assertions",
+        "test_code": "import assert from \"node:assert/strict\";\nimport { totalCents } from \"./candidate.js\";\nassert.equal(totalCents([]), 0);\nassert.equal(totalCents([\"0.10\", \"0.20\"]), 30);\nassert.equal(totalCents([\"10\", \"2.5\", \"0.03\"]), 1253);\nassert.equal(totalCents([\"90071992547409.91\"]), Number.MAX_SAFE_INTEGER);\nassert.throws(() => totalCents([\"90071992547409.91\", \"0.01\"]), RangeError);\nfor (const value of [\"12.345\", \"1.20x\", \"-1\", \"+1\", \" 1.00\", \"1e2\", \"\", \"NaN\"]) {\n  assert.throws(() => totalCents([value]), TypeError);\n}\n"
+      },
+      "expected": {
+        "decimal_example_cents": 30,
+        "mixed_example_cents": 1253,
+        "format_exception": "TypeError",
+        "overflow_exception": "RangeError"
+      }
+    },
+    {
+      "id": "typescript-003",
+      "category": "code",
+      "language": "typescript",
+      "focus": [
+        "url_encoding",
+        "null_handling",
+        "array_values",
+        "determinism"
+      ],
+      "title": "查询字符串正确编码重复参数",
+      "input": {
+        "prompt": "修复toQuery。参数值为字符串、字符串数组、null或undefined。键按字典序排序，数组展开为同名多项并保留数组顺序；忽略null/undefined/空数组，保留空字符串。键和值都使用encodeURIComponent，不添加问号，不修改输入。",
+        "filename": "candidate.ts",
+        "source_code": "export function toQuery(params: Record<string, string | string[] | null | undefined>): string {\n  return Object.entries(params).map(([key, value]) => `${key}=${value}`).join(\"&\");\n}\n",
+        "constraints": [
+          "保持给定导出函数名称与返回形状。",
+          "不增加第三方运行依赖。",
+          "不得删除或弱化测试断言。"
+        ]
+      },
+      "acceptance_criteria": [
+        "空格编码为%20，&和/不能直接进入值。",
+        "数组产生重复参数而非逗号拼接。",
+        "空字符串保留为key=，缺失值被忽略。"
+      ],
+      "verification_method": {
+        "type": "typescript_node_assertions",
+        "test_code": "import assert from \"node:assert/strict\";\nimport { toQuery } from \"./candidate.js\";\nassert.equal(toQuery({}), \"\");\nassert.equal(toQuery({ z: \"2\", a: \"1\" }), \"a=1&z=2\");\nassert.equal(toQuery({ q: \"a b&c\", tag: [\"x/y\", \"中文\"], empty: \"\", skip: null }), \"empty=&q=a%20b%26c&tag=x%2Fy&tag=%E4%B8%AD%E6%96%87\");\nassert.equal(toQuery({ a: [], b: undefined, c: null }), \"\");\nassert.equal(toQuery({ \"a&b\": \"c=d\" }), \"a%26b=c%3Dd\");\nconst params = { tag: [\"z\", \"a\"] };\nassert.equal(toQuery(params), \"tag=z&tag=a\");\nassert.deepEqual(params, { tag: [\"z\", \"a\"] });\n"
+      },
+      "expected": {
+        "empty_result": "",
+        "ordered_result": "a=1&z=2",
+        "repeat_parameter_result": "tag=z&tag=a"
+      }
+    },
+    {
+      "id": "typescript-004",
+      "category": "code",
+      "language": "typescript",
+      "focus": [
+        "idempotence",
+        "replay_cursor",
+        "ordering",
+        "validation"
+      ],
+      "title": "事件回放去重并识别缺口",
+      "input": {
+        "prompt": "修复applyEvents。lastSequence为非负整数，events中的sequence必须为正整数。忽略旧事件和重复事件；只接受从lastSequence+1连续增长的新事件，发现缺口抛RangeError，不自行重排。非法事件序号抛TypeError。空批次保留原文本和游标。",
+        "filename": "candidate.ts",
+        "source_code": "export type Event = { sequence: number; text: string };\nexport function applyEvents(current: string, lastSequence: number, events: Event[]) {\n  return { text: current + events.map(event => event.text).join(\"\"), lastSequence: events.at(-1)?.sequence ?? 0 };\n}\n",
+        "constraints": [
+          "保持给定导出函数名称与返回形状。",
+          "不增加第三方运行依赖。",
+          "不得删除或弱化测试断言。"
+        ]
+      },
+      "acceptance_criteria": [
+        "旧事件和重复事件不重复追加文本。",
+        "连续性检查针对每个新事件。",
+        "错误时不修改events输入数组。"
+      ],
+      "verification_method": {
+        "type": "typescript_node_assertions",
+        "test_code": "import assert from \"node:assert/strict\";\nimport { applyEvents } from \"./candidate.js\";\nassert.deepEqual(applyEvents(\"AB\", 2, []), { text: \"AB\", lastSequence: 2 });\nconst batch = [{ sequence: 2, text: \"B\" }, { sequence: 3, text: \"C\" }, { sequence: 3, text: \"C\" }, { sequence: 4, text: \"D\" }];\nconst saved = JSON.stringify(batch);\nassert.deepEqual(applyEvents(\"AB\", 2, batch), { text: \"ABCD\", lastSequence: 4 });\nassert.equal(JSON.stringify(batch), saved);\nassert.deepEqual(applyEvents(\"\", 0, [{ sequence: 1, text: \"A\" }]), { text: \"A\", lastSequence: 1 });\nassert.throws(() => applyEvents(\"A\", 1, [{ sequence: 3, text: \"C\" }]), RangeError);\nassert.throws(() => applyEvents(\"\", 0, [{ sequence: 1.5, text: \"bad\" }]), TypeError);\nassert.throws(() => applyEvents(\"\", 0, [{ sequence: 0, text: \"bad\" }]), TypeError);\n"
+      },
+      "expected": {
+        "deduplicated_result": {
+          "text": "ABCD",
+          "lastSequence": 4
+        },
+        "gap_exception": "RangeError",
+        "invalid_sequence_exception": "TypeError"
+      }
+    },
+    {
+      "id": "typescript-005",
+      "category": "code",
+      "language": "typescript",
+      "focus": [
+        "prototype_keys",
+        "stable_grouping",
+        "immutability"
+      ],
+      "title": "分组键允许原型属性名称",
+      "input": {
+        "prompt": "修复groupBy。允许任意字符串键，包括__proto__、constructor和toString；每组保持输入顺序，返回对象拥有对应的自有属性，不能修改Object.prototype或输入。",
+        "filename": "candidate.ts",
+        "source_code": "export function groupBy<T>(items: T[], key: (item: T) => string): Record<string, T[]> {\n  const result: Record<string, T[]> = {};\n  for (const item of items) {\n    const name = key(item);\n    (result[name] ||= []).push(item);\n  }\n  return result;\n}\n",
+        "constraints": [
+          "保持给定导出函数名称与返回形状。",
+          "不增加第三方运行依赖。",
+          "不得删除或弱化测试断言。"
+        ]
+      },
+      "acceptance_criteria": [
+        "原型名称不能被当成已有分组数组。",
+        "结果使用自有属性，Object.prototype保持不变。",
+        "保留各组成员原有顺序。"
+      ],
+      "verification_method": {
+        "type": "typescript_node_assertions",
+        "test_code": "import assert from \"node:assert/strict\";\nimport { groupBy } from \"./candidate.js\";\nconst before = Object.getOwnPropertyNames(Object.prototype);\nconst items = [{ key: \"__proto__\", value: 1 }, { key: \"constructor\", value: 2 }, { key: \"__proto__\", value: 3 }, { key: \"toString\", value: 4 }];\nconst saved = JSON.stringify(items);\nconst result = groupBy(items, item => item.key);\nassert.equal(Object.hasOwn(result, \"__proto__\"), true);\nassert.equal(Object.hasOwn(result, \"constructor\"), true);\nassert.deepEqual(result[\"__proto__\"].map(item => item.value), [1, 3]);\nassert.deepEqual(result[\"constructor\"].map(item => item.value), [2]);\nassert.deepEqual(result[\"toString\"].map(item => item.value), [4]);\nassert.deepEqual(Object.keys(groupBy([], () => \"x\")), []);\nassert.deepEqual(Object.getOwnPropertyNames(Object.prototype), before);\nassert.equal(JSON.stringify(items), saved);\n"
+      },
+      "expected": {
+        "prototype_group_values": [
+          1,
+          3
+        ],
+        "constructor_group_values": [
+          2
+        ],
+        "to_string_group_values": [
+          4
+        ],
+        "changes_object_prototype": false
+      }
+    }
+  ]
+}

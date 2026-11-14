@@ -1,0 +1,68 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  backend:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_DB: omniharness_test
+          POSTGRES_USER: postgres
+          # Public fixture password, only for this disposable CI service.
+          POSTGRES_PASSWORD: omniharness-ci-only
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d omniharness_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
+    env:
+      OMNI_TEST_POSTGRES_URL: postgresql+psycopg://postgres:omniharness-ci-only@127.0.0.1:5432/omniharness_test
+      LANGSMITH_TRACING: "false"
+      LANGCHAIN_TRACING_V2: "false"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+      - name: Install locked Python dependencies
+        run: uv sync --locked
+      - name: Lint
+        # Frozen evaluation fixtures intentionally contain defective code.
+        run: uv run --locked ruff check src tests scripts
+      - name: Test including PostgreSQL integration
+        run: uv run --locked pytest -q -rs
+
+  frontend:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - name: Install locked frontend dependencies
+        run: npm ci
+      - name: Build
+        run: npm run build
+      - name: Test
+        run: npm test

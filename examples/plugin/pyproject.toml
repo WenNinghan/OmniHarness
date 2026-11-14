@@ -1,0 +1,16 @@
+[build-system]
+requires = ["hatchling>=1.27,<2"]
+build-backend = "hatchling.build"
+
+[project]
+name = "omniharness-example-verifier"
+version = "0.1.0"
+description = "Minimal trusted OmniHarness verifier plugin example"
+requires-python = ">=3.12"
+dependencies = ["omniharness>=0.1.0a1,<0.2"]
+
+[project.entry-points."omniharness.plugins"]
+required-sections = "omniharness_example:RequiredSectionsVerifier"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/omniharness_example"]

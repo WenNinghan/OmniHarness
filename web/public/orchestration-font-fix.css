@@ -1,0 +1,39 @@
+/* Keep the orchestration page readable without changing other screens. */
+.orch-page .orch-heading p,
+.orch-page .orch-advisor p,
+.orch-page .orch-node p,
+.orch-page .orch-card > p,
+.orch-page .orch-card-hint,
+.orch-page .orch-note,
+.orch-page .evidence-editor {
+  font-size: 14px;
+  line-height: 1.8;
+  color: #b6b6b6;
+}
+
+.orch-page .orch-section-head h2,
+.orch-page .orch-node h3,
+.orch-page .orch-card h3,
+.orch-page .orch-advisor h3 {
+  font-size: 16px;
+  line-height: 1.5;
+}
+
+.orch-page .orch-meta,
+.orch-page .orch-node-index,
+.orch-page .orch-node-model,
+.orch-page .orch-card-role,
+.orch-page .orch-version {
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+.orch-page .orch-node-model {
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+.orch-page .orch-select,
+.orch-page .evidence-row input {
+  font-size: 14px;
+}
