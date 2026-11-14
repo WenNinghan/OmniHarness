@@ -736,6 +736,7 @@ async def test_real_api_claim_and_listener_loss_fail_closed(postgres_environment
             assert listener is not None
             worker._v10_owner_listener = listener
             try:
+                worker.workspace_broker = real_broker  # The registry above is bound to settings.instance_id.
                 worker._v10_mock_correction_test_only = True
                 worker.agent_model_factory = lambda role, _config: (
                     WaitingCorrectionModel() if role == "execute" else InteractiveStage(role))
