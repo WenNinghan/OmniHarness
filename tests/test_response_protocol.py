@@ -5,8 +5,9 @@ from dataclasses import replace
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import pytest
-from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
+from langchain_core.messages import AIMessage, AIMessageChunk, HumanMessage, ToolMessage
 
+from omniharness.context_runtime import public_message
 from omniharness.model_output import extract_output, require_complete_output
 from omniharness.providers import ProviderError, RuntimeModelConfig, build_chat_model, stream_chat
 
@@ -173,6 +174,41 @@ def test_explicit_blocks_only_never_guess_from_answer_language_or_example_tags()
     example = 'We need an example:\n```xml\n<think>test</think>\n```'
     assert extract_output(AIMessage(content=example)).text == example
     assert extract_output(AIMessage(content=example)).reasoning == ""
+
+
+@pytest.mark.parametrize("content,expected,reasoning", [
+    (["hello"], "hello", ""),
+    (["hello", {"type": "text", "text": " world"}, "!"], "hello world!", ""),
+    (["visible ", {"type": "thinking", "thinking": "private thought"},
+      {"type": "text", "text": "answer"}, {"type": "output_text", "text": "!"},
+      {"type": "text", "text": "hidden", "thought": True},
+      {"type": "image_url", "image_url": {"url": "https://example.invalid/image"}}],
+     "visible answer!", "private thoughthidden"),
+    (["<think>literal example</think>"], "<think>literal example</think>", ""),
+])
+def test_list_content_preserves_text_across_completion_and_context(content, expected, reasoning):
+    message = AIMessage(content=content, response_metadata={"finish_reason": "stop"})
+    assert extract_output(message).text == expected
+    assert extract_output(message).reasoning == reasoning
+    assert require_complete_output(message) == expected
+    assert public_message(message).content == expected
+
+
+@pytest.mark.parametrize("content,expected", [
+    (["hello"], "hello"),
+    (["hello", {"type": "text", "text": " world"}], "hello world"),
+])
+async def test_stream_list_text_is_a_complete_answer(monkeypatch, content, expected):
+    class OfflineModel:
+        async def astream(self, _messages):
+            yield AIMessageChunk(content=content, response_metadata={"finish_reason": "stop"})
+
+    monkeypatch.setattr("omniharness.providers.build_chat_model", lambda _config: OfflineModel())
+    config = RuntimeModelConfig("offline", "openai-compatible", "fixture", api_key="not-sent",
+                                base_url="https://example.invalid/v1")
+    deltas = [delta async for delta in stream_chat(config, [{"role": "user", "content": "test"}])]
+    assert "".join(delta.text for delta in deltas) == expected
+    assert deltas[-1].output_status == "complete"
 
 
 @pytest.mark.parametrize("metadata,code", [

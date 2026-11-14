@@ -90,6 +90,7 @@ export default function App() {
   const scrollRef = useRef<HTMLDivElement>(null)
   const selectedRef = useRef(selected)
   const runRef = useRef(run)
+  const modelsVersion = useRef(0)
   const snapshotVersion = useRef(0)
   const extrasVersion = useRef(0)
   const agentRunsVersion = useRef(0)
@@ -103,7 +104,15 @@ export default function App() {
     setToast({ message, error }); if (toastTimer.current) clearTimeout(toastTimer.current)
     toastTimer.current = setTimeout(() => setToast(null), error ? 9000 : 4500)
   }, [])
-  const refreshModels = useCallback(async () => { setModels(await api.models()) }, [])
+  const refreshModels = useCallback(async () => {
+    const version = ++modelsVersion.current
+    try {
+      const items = await api.models()
+      if (version === modelsVersion.current) setModels(items)
+    } catch (reason) {
+      if (version === modelsVersion.current) throw reason
+    }
+  }, [])
   const refreshConversations = useCallback(async () => { setConversations(await api.conversations()) }, [])
   const refreshExtras = useCallback(async (id: string, conversationId: string) => {
     if (selectedRef.current !== conversationId || runRef.current?.id !== id) return

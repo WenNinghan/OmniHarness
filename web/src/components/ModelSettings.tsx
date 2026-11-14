@@ -5,7 +5,7 @@ import { api } from '../lib/api.ts'
 import { ContextSettings } from './ContextSettings.tsx'
 import { contextFromForm } from '../lib/context-policy.ts'
 import { formatOutputLimit } from '../lib/model-picker.ts'
-import type { AdapterType, ModelConfig, ModelInput, ModelCatalog, Probe, ProbeResult } from '../lib/types.ts'
+import type { AdapterType, ModelConfig, ModelInput, ModelCatalog, Probe } from '../lib/types.ts'
 import { Badge, Button, Modal } from './ui.tsx'
 
 const adapters: { value: AdapterType; label: string }[] = [
@@ -108,13 +108,12 @@ export function ModelSettings({ models, refresh, notify }: { models: ModelConfig
   const [editing, setEditing] = useState<ModelConfig | 'new' | null>(null)
   const [testing, setTesting] = useState<string | null>(null)
   const [changing, setChanging] = useState<string | null>(null)
-  const [results, setResults] = useState<Record<string, Partial<Record<Probe, ProbeResult>>>>({})
   const [importing, setImporting] = useState(false)
   const inputRef = useRef<HTMLInputElement>(null)
   const [expanded, setExpanded] = useState<string | null>(null)
   async function test(model: ModelConfig, requested: Probe[] = probes) {
     setTesting(model.id); setExpanded(model.id)
-    try { const response = await api.testModel(model.id, requested); setResults(old => ({ ...old, [model.id]: { ...model.capabilities, ...old[model.id], ...response.results } })); await refresh() }
+    try { await api.testModel(model.id, requested); await refresh() }
     catch (reason) { notify(reason instanceof Error ? reason.message : '测试失败', true) }
     finally { setTesting(null) }
   }
@@ -151,7 +150,7 @@ export function ModelSettings({ models, refresh, notify }: { models: ModelConfig
     <div className="settings-summary"><div><span className="summary-icon"><Server size={19} /></span><div><strong>{models.length} 个连接</strong><span>{models.filter(model => model.enabled).length} 个已启用</span></div></div><div className="summary-note"><ShieldCheck size={17} /><span>凭据由本地服务保存，配置导出不含密钥</span></div></div>
     <div className="section-toolbar"><h2>已配置的模型</h2><div><input ref={inputRef} type="file" accept="application/json,.json" className="hidden" onChange={event => void importFile(event.target.files?.[0])} /><Button size="small" busy={importing} onClick={() => inputRef.current?.click()}><ArrowUpFromLine size={14} />导入</Button><Button size="small" onClick={() => void exportConfig()}><ArrowDownToLine size={14} />导出</Button></div></div>
     {models.length === 0 ? <div className="empty-models"><KeyRound size={30} /><h3>从第一个模型开始</h3><p>添加服务商与 API Key，即可开始对话。<br />也可以显式添加 Mock 模型体验界面。</p><Button variant="primary" onClick={() => setEditing('new')}><Plus size={15} />添加模型连接</Button></div> : <div className="model-list">{models.map(model => {
-      const capability = results[model.id] ?? model.capabilities ?? {}
+      const capability = model.capabilities ?? {}
       return <article className={`model-card ${!model.enabled ? 'model-disabled' : ''}`} key={model.id}>
         <div className="model-main"><div className={`provider-icon provider-${model.adapter_type}`}>{model.adapter_type === 'mock' ? <FlaskConical size={21} /> : <Radio size={21} />}</div><div className="model-identity"><div><h3>{model.name}</h3>{model.adapter_type === 'mock' && <Badge tone="amber">MOCK 演示</Badge>}{!model.enabled && <Badge>已禁用</Badge>}</div><p>{adapters.find(adapter => adapter.value === model.adapter_type)?.label} <span>·</span> <code>{model.model_name}</code> <span>·</span> 输出上限 {formatOutputLimit(model.max_output_tokens)}</p></div><div className="model-actions"><Button variant="ghost" size="icon" aria-label={`编辑 ${model.name}`} onClick={() => setEditing(model)}><Pencil size={16} /></Button><Button variant="ghost" size="icon" busy={changing === model.id} aria-label={`${model.enabled ? '禁用' : '启用'} ${model.name}`} onClick={() => void toggle(model)}><Power size={16} /></Button></div></div>
         <div className="model-footer"><span className={model.key_configured || ['mock', 'openai-compatible'].includes(model.adapter_type) ? 'credential-status' : 'credential-status missing'}><KeyRound size={13} />{model.adapter_type === 'mock' ? '模拟运行，无需密钥' : model.key_configured ? '密钥已配置' : model.adapter_type === 'openai-compatible' ? '免密连接' : '未配置密钥'}</span><div>{['openai-compatible', 'openai'].includes(model.adapter_type) && <Button variant="ghost" size="small" disabled={!model.enabled} onClick={() => setCatalogSource(model)}>模型目录</Button>}<Button variant="ghost" size="small" onClick={() => setExpanded(expanded === model.id ? null : model.id)}>能力详情<ChevronDown size={13} className={expanded === model.id ? 'rotate' : ''} /></Button><Button size="small" disabled={!model.enabled || testing !== null} busy={testing === model.id} onClick={() => void test(model)}>测试连接</Button></div></div>

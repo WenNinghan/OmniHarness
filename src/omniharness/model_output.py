@@ -55,9 +55,14 @@ def answer_text(content: Any) -> str:
     if isinstance(content, str):
         return content
     if isinstance(content, list):
-        return "".join(item["text"] for item in content if isinstance(item, dict)
-                       and item.get("type") in {"text", "output_text"}
-                       and item.get("thought") is not True and isinstance(item.get("text"), str))
+        pieces = []
+        for item in content:
+            if isinstance(item, str):
+                pieces.append(item)
+            elif (isinstance(item, dict) and item.get("type") in {"text", "output_text"}
+                  and item.get("thought") is not True and isinstance(item.get("text"), str)):
+                pieces.append(item["text"])
+        return "".join(pieces)
     return ""
 
 
