@@ -107,7 +107,16 @@ class ReviewFinding(BaseModel):
     severity: Literal["HIGH", "MEDIUM", "LOW", "INFO"]
     description: str = Field(min_length=1, max_length=4000)
     status: Literal["PASS", "FAIL", "UNVERIFIED", "BLOCKED", "DISPUTED"]
-    recommendation: str = Field(min_length=1, max_length=4000)
+    recommendation: str = Field(max_length=4000)
+
+    @model_validator(mode="after")
+    def recommendation_for_unresolved_findings(self):
+        # A passing observation can explicitly have no proposed action. Keep
+        # the required field and all non-PASS constraints; never invent advice
+        # or reinterpret the model's status to make a response valid.
+        if self.status != "PASS" and len(self.recommendation) == 0:
+            raise ValueError("Non-PASS findings require a recommendation")
+        return self
 
 
 class Review(BaseModel):
@@ -269,7 +278,41 @@ def build_stage_graph(*, models, hooks, checkpointer, max_context_messages=100, 
         )
         evidence_review = workflow_version in {EVIDENCE_WORKFLOW_VERSION, INTERACTIVE_WORKFLOW_VERSION, INTERACTIVE_COMPAT_WORKFLOW_VERSION, INTERACTIVE_V9_WORKFLOW_VERSION, INTERACTIVE_V10_WORKFLOW_VERSION} and stage == "review"
         await hooks.check_control("model_calls", stage, None)
-        saved = await hooks.replay_invocation("model_calls", stage, None, identity) if tools_enabled else None
+        request_policy = None
+        if tools_enabled and hasattr(hooks, "worker"):
+            from .request_policy import parse_request_policy
+            async with hooks.serial:
+                with hooks.worker.transaction() as db:
+                    _, frozen_role = hooks._run(db, stage, allow_supplements=True)
+                    request_policy = parse_request_policy(frozen_role["model"].get("parameters", {}))
+        if request_policy is not None:
+            from .context_visibility import model_input_callback
+            from .provider_recovery import run_provider_call
+
+            def reservation_callback(attempt):
+                visibility = model_input_callback(hooks, stage, attempt, request_messages,
+                                                   system_present=True, system_message=system)
+                if not evidence_review:
+                    return visibility
+                from .review_evidence import review_input_on_reserved
+                capture = review_input_on_reserved(hooks, attempt, request_messages)
+                def callback(db, row):
+                    visibility(db, row)
+                    capture(db, row)
+                return callback
+
+            async def dispatch(attempt):
+                response = await models[stage].ainvoke([system, *request_messages])
+                return {"message": response.model_dump(mode="json")}
+
+            transport = ("compatible-native-stream-v1" if
+                         getattr(models[stage], "omni_normalize_stream_usage", False)
+                         and getattr(models[stage], "streaming", False) else "ainvoke_default")
+            saved, identity = await run_provider_call(host=hooks, role=stage, root=identity,
+                policy=request_policy, dispatch=dispatch, on_reserved_factory=reservation_callback,
+                transport_mode=transport)
+        else:
+            saved = await hooks.replay_invocation("model_calls", stage, None, identity) if tools_enabled else None
         if saved is not None:
             response = AIMessage.model_validate(saved["message"])
             try:
@@ -420,7 +463,8 @@ def build_stage_graph(*, models, hooks, checkpointer, max_context_messages=100, 
                 else:
                     review = _parse(content, Review)
                     lines = [review.summary]
-                    lines.extend(f"[{item.severity}/{item.status}] {item.location}：{item.description}；建议：{item.recommendation}"
+                    lines.extend(f"[{item.severity}/{item.status}] {item.location}：{item.description}"
+                                 + (f"；建议：{item.recommendation}" if item.recommendation else "")
                                  for item in review.findings)
                     if review.unverified:
                         lines.append("未验证：" + "；".join(review.unverified))

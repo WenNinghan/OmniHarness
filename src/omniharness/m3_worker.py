@@ -286,16 +286,13 @@ def _root_diagnostic(exc):
     Only the fixed categories of _failure_diagnostic are kept; never text.
     """
     from .m3_host import _failure_diagnostic
-    root, seen = exc, 0
-    while root.__context__ is not None and seen < 8:
-        root, seen = root.__context__, seen + 1
     try:
-        diagnostic = _failure_diagnostic(root, "unknown")
+        diagnostic = _failure_diagnostic(exc, "unknown")
     except Exception:
         return None
-    diagnostic["exception_type"] = type(root).__name__[:80] if type(root).__module__.startswith((
-        "omniharness", "httpx", "httpcore", "openai", "asyncio", "builtins", "sqlalchemy", "langgraph")) else "other"
-    diagnostic["chain_depth"] = seen
+    chain = (diagnostic.get("transport_diagnostic") or {}).get("exception_chain", [])
+    diagnostic["exception_type"] = chain[-1]["type"].rsplit(".", 1)[-1] if chain else "other"
+    diagnostic["chain_depth"] = max(0, len(chain) - 1)
     return diagnostic
 
 
@@ -345,7 +342,8 @@ def _review(worker, identity, code, message, *, preserve_requirements=False, sta
             reject_pending_commands(db, run)
         add_event(db, run, "run.pending_review", {"code": code, "message": message,
                                                   "message_id": assistant.id if assistant else None,
-                                                  "output_metadata": assistant.output_metadata if assistant else {}})
+                                                  "output_metadata": assistant.output_metadata if assistant else {},
+                                                  **({"diagnostic": diagnostic} if diagnostic is not None else {})})
 
 
 def _budget_exceeded(worker, identity, *, started):
@@ -1092,6 +1090,8 @@ async def run_agent(worker, identity, *, model_factory=None):
     except AgentContextLimitExceeded:
         _context_exceeded(worker, identity, started=started)
     except ContextPolicyError as exc:
+        from .context_host import record_context_rejection
+        record_context_rejection(worker, identity, exc)
         with worker.transaction() as db:
             unknown = db.scalar(select(OperationRecord.operation_id).where(
                 OperationRecord.run_id == identity, OperationRecord.status.in_(["running", "uncertain"])).limit(1))

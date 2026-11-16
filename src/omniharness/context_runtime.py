@@ -19,6 +19,11 @@ from langchain_core.runnables import RunnableLambda
 from langgraph.graph.message import add_messages
 from langgraph.runtime import Runtime
 
+from .context_admission import (
+    ContextAdmissionDiagnostic,
+    context_admission_diagnostic,
+    safe_admission_diagnostic,
+)
 from .context_policy import (
     ApproximateContextCounter,
     ContextPolicy,
@@ -28,13 +33,16 @@ from .context_policy import (
     ContextTokenCounter,
     ModelContextLimits,
     context_budget,
+    context_policy_dict,
     counter_for_policy,
 )
 from .model_output import answer_text, extract_output, output_issue
 
 
 class ContextPreparationError(ContextPolicyError):
-    pass
+    def __init__(self, code: str, message: str, *, diagnostic: ContextAdmissionDiagnostic | None = None):
+        self.diagnostic = safe_admission_diagnostic(diagnostic)
+        super().__init__(code, message)
 
 
 def _digest(value) -> str:
@@ -308,7 +316,9 @@ DEGRADABLE_SUMMARY_CODES = frozenset({
 })
 
 
-def masked_tool_message(message: BaseMessage, run_id: str) -> ToolMessage | None:
+def masked_tool_message(
+    message: BaseMessage, run_id: str, *, require_completed: bool = False,
+) -> ToolMessage | None:
     """Return a deterministic host stub for an older tool result, or None.
 
     Only a host-produced ToolMessage whose JSON carries artifacts of this Run
@@ -322,6 +332,18 @@ def masked_tool_message(message: BaseMessage, run_id: str) -> ToolMessage | None
         return None
     if not isinstance(data, dict) or data.get("masked") is True:
         return None
+    if require_completed:
+        # Recent results are eligible only with positive completion evidence.
+        # An artifact may be a partial log of an uncertain operation; retaining
+        # the artifact alone must never turn that state into apparent success.
+        completed = {"complete", "completed", "success", "succeeded", "finished", "done"}
+        if message.status != "success" or data.get("error") or data.get("error_code"):
+            return None
+        if "complete" in data and data["complete"] is not True:
+            return None
+        for key in ("state", "status", "output_status", "result_status"):
+            if key in data and (not isinstance(data[key], str) or data[key].lower() not in completed):
+                return None
     artifacts = data.get("artifacts", [])
     if not isinstance(artifacts, list):
         return None
@@ -329,6 +351,11 @@ def masked_tool_message(message: BaseMessage, run_id: str) -> ToolMessage | None
            and item["id"] and item.get("run_id") == run_id]
     if len(ids) != len(artifacts):
         return None
+    if require_completed:
+        for artifact in artifacts:
+            metadata = artifact.get("metadata_json", {})
+            if not isinstance(metadata, dict) or ("complete" in metadata and metadata["complete"] is not True):
+                return None
     if (not ids and message.name == "artifact_read" and isinstance(data.get("artifact_id"), str)
             and data["artifact_id"] and not data.get("error")):
         # The gateway only pages artifacts of the current Run; a re-read page
@@ -350,7 +377,9 @@ def masked_tool_message(message: BaseMessage, run_id: str) -> ToolMessage | None
                        status=message.status, content=content)
 
 
-def mask_older_tool_results(history: list[BaseMessage], run_id: str, keep_recent: int) -> list[BaseMessage]:
+def mask_older_tool_results(
+    history: list[BaseMessage], run_id: str, keep_recent: int, *, require_completed: bool = False,
+) -> list[BaseMessage]:
     """Mask results outside the newest complete tool exchanges; pairs stay intact."""
     groups = interaction_groups(history)
     tool_groups = [index for index, group in enumerate(groups) if any(isinstance(m, ToolMessage) for m in group)]
@@ -358,7 +387,8 @@ def mask_older_tool_results(history: list[BaseMessage], run_id: str, keep_recent
     output: list[BaseMessage] = []
     for index, group in enumerate(groups):
         for message in group:
-            stub = None if index in protected else masked_tool_message(message, run_id)
+            stub = None if index in protected else masked_tool_message(message, run_id,
+                                                                       require_completed=require_completed)
             output.append(stub or message)
     return output
 
@@ -373,7 +403,7 @@ async def prepare_context(
     tool_schemas = deepcopy(value.tool_schemas)
     main_budget = context_budget(policy, value.model_limits, output_tokens=value.main_output_tokens)
     summary_budget = context_budget(policy, value.model_limits, output_tokens=policy.summary_output_tokens)
-    policy_fingerprint = _digest(asdict(policy))
+    policy_fingerprint = _digest(context_policy_dict(policy))
     segments = [list(value.prefix_messages), list(value.history_messages), list(value.suffix_messages)]
     original = [message for segment in segments for message in segment]
     ids = [message.id for message in original]
@@ -406,9 +436,15 @@ async def prepare_context(
         records = [message.model_dump() if v2 else _serialized(message) for message in all_messages]
         characters = len(json.dumps(records, ensure_ascii=False))
         characters += len(json.dumps(tool_schemas, ensure_ascii=False))
-        if (len(all_messages) > policy.max_messages or characters > policy.max_characters
-                or request_tokens(messages) > main_budget.input_limit):
-            raise ContextPreparationError("CONTEXT_LIMIT", "Prepared context exceeds the frozen input limits")
+        diagnostic = context_admission_diagnostic(
+            input_tokens=request_tokens(messages), input_limit=main_budget.input_limit,
+            message_count=len(all_messages), message_limit=policy.max_messages,
+            serialized_characters=characters, character_limit=policy.max_characters,
+            window_known=main_budget.provider_window_known,
+        )
+        if diagnostic is not None:
+            raise ContextPreparationError("CONTEXT_LIMIT", "Prepared context exceeds the frozen input limits",
+                                          diagnostic=diagnostic)
 
     protected = [*prefix, *suffix]
     guard(protected)  # Do not pay to summarize if immutable requirements cannot fit.
@@ -497,13 +533,33 @@ async def prepare_context(
     if (v3 and policy.mask_tool_results and history
             and (guard_triggered or request_tokens(working) >= main_budget.summarize_at_tokens)):
         before_tokens = request_tokens(working)
-        masked = mask_older_tool_results(history, value.scope.run_id, policy.mask_keep_recent_exchanges)
+        masked = mask_older_tool_results(
+            history, value.scope.run_id, policy.mask_keep_recent_exchanges,
+            require_completed=policy.pressure_mask_keep_recent_exchanges is not None,
+        )
         masked_ids = [new.id for old, new in zip(history, masked) if new is not old]
         if masked_ids:
             history = masked
             working = [*prefix, *history, *suffix]
             masked_saved = max(0, before_tokens - request_tokens(working))
             decisions.append("tool_results_masked")
+            try:
+                guard(working)
+                guard_triggered = False
+            except ContextPreparationError:
+                guard_triggered = True
+    if (v3 and policy.mask_tool_results and history and guard_triggered
+            and policy.pressure_mask_keep_recent_exchanges is not None):
+        before_tokens = request_tokens(working)
+        masked = mask_older_tool_results(history, value.scope.run_id,
+                                        policy.pressure_mask_keep_recent_exchanges, require_completed=True)
+        pressure_ids = [new.id for old, new in zip(history, masked) if new is not old]
+        if pressure_ids:
+            history = masked
+            working = [*prefix, *history, *suffix]
+            masked_ids = list(dict.fromkeys([*masked_ids, *pressure_ids]))
+            masked_saved += max(0, before_tokens - request_tokens(working))
+            decisions.append("tool_results_pressure_masked")
             try:
                 guard(working)
                 guard_triggered = False
@@ -542,7 +598,8 @@ async def prepare_context(
             working = [*prefix, *history, *suffix]
             try:
                 guard(working)
-            except ContextPreparationError:
+            except ContextPreparationError as admission_error:
+                exc.diagnostic = admission_error.diagnostic
                 raise exc from None
             decisions.append("summary_degraded:" + exc.code)
             update = None

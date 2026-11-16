@@ -15,10 +15,8 @@ from sqlalchemy import select
 from .m3_agents import (
     AgentBoundaryError,
     AgentBudgetExceeded,
-    AgentContextLimitExceeded,
     _raise_sanitized,
     invocation_identity,
-    validate_model_context,
 )
 from .m3_host import FencedAgentHost
 from .m4_contract import COLLAB_WORKFLOWS, workspace_prompts
@@ -104,7 +102,9 @@ class ExecutionBoundary(AgentMiddleware):
         return {"messages": [RemoveMessage(id=REMOVE_ALL_MESSAGES), *effective]}
 
     async def awrap_model_call(self, request, handler):
+        from .context_admission import context_admission_diagnostic
         from .context_policy import context_budget, counter_for_policy, parse_context_configuration
+        from .context_runtime import ContextPreparationError
         await self.host.check_control("model_calls", "execute", None)
         # A restart may resume the model node after before_model was already
         # checkpointed. Read the frozen configuration instead of relying on a
@@ -114,15 +114,28 @@ class ExecutionBoundary(AgentMiddleware):
                 _, role = self.host._run(db, "execute", allow_supplements=True)
                 snapshot = role["model"]
         policy, limits = parse_context_configuration(snapshot.get("context_policy"))
-        validate_model_context(request, policy.max_messages, policy.max_characters)
         tools = tuple(convert_to_openai_tool(tool) for tool in request.tools)
         messages = ([request.system_message] if request.system_message else []) + list(request.messages)
-        serialized = json.dumps([message.model_dump(mode="json") for message in messages], ensure_ascii=False)
+        try:
+            serialized = json.dumps([message.model_dump(mode="json") for message in messages],
+                                    ensure_ascii=False, allow_nan=False)
+            tool_characters = len(json.dumps(tools, ensure_ascii=False, allow_nan=False))
+        except (AttributeError, TypeError, ValueError, UnicodeError):
+            raise AgentBoundaryError("Model input cannot be checked safely") from None
         budget = context_budget(policy, limits, output_tokens=snapshot["max_output_tokens"])
-        if (len(serialized) + len(json.dumps(tools, ensure_ascii=False)) > policy.max_characters
-                or counter_for_policy(policy).count(messages, tools=tools) > budget.input_limit):
-            raise AgentContextLimitExceeded("Actual native messages and tools exceed the frozen input budget")
+        diagnostic = context_admission_diagnostic(
+            input_tokens=counter_for_policy(policy).count(messages, tools=tools), input_limit=budget.input_limit,
+            message_count=len(messages), message_limit=policy.max_messages,
+            serialized_characters=len(serialized) + tool_characters,
+            character_limit=policy.max_characters, window_known=budget.provider_window_known)
+        if diagnostic is not None:
+            raise ContextPreparationError("CONTEXT_LIMIT",
+                "Actual native messages and tools exceed the frozen input budget", diagnostic=diagnostic)
         identity = invocation_identity(request, kind="model_calls", role="execute", tool_name=None)
+        from .request_policy import parse_request_policy
+        request_policy = parse_request_policy(snapshot.get("parameters", {}))
+        if request_policy is not None:
+            return await self._provider_model_call(request, handler, identity, tools, request_policy)
         saved = await self.host.replay_invocation("model_calls", "execute", None, identity)
         if saved is not None:
             messages = [AIMessage.model_validate(item) for item in saved["messages"]]
@@ -188,6 +201,53 @@ class ExecutionBoundary(AgentMiddleware):
             require_complete_output(response.result[0], allow_tools=True)
             return response
         return await self.scheduler.run_tracked(execute_and_save)
+
+    async def _provider_model_call(self, request, handler, root, tools, policy):
+        from .context_visibility import model_input_callback
+        from .provider_recovery import run_provider_call
+
+        def reservation_callback(identity):
+            visibility = model_input_callback(self.host, "execute", identity, request.messages,
+                system_present=request.system_message is not None, tool_count=len(tools),
+                system_message=request.system_message, tool_schemas=tools)
+            if self.host.workflow_version != "stage-agent-v10":
+                return visibility
+            from .m4_collaboration import current_task_scope
+            try:
+                logical_task = current_task_scope()["id"]
+            except (KeyError, ValueError, RuntimeError):
+                raise AgentBoundaryError("V10 execution task scope is unavailable") from None
+            if not identity.checkpoint_ns or not identity.task_id or not logical_task:
+                raise AgentBoundaryError("V10 execution checkpoint identity is unavailable")
+
+            def callback(db, operation):
+                visibility(db, operation)
+                operation.result = {**(operation.result or {}), "v10_model_scope": {
+                    "run_id": self.host.run_id, "task_id": logical_task,
+                    "checkpoint_ns": identity.checkpoint_ns, "graph_task_id": identity.task_id,
+                    "invocation_id": identity.invocation_id}}
+            return callback
+
+        async def dispatch(identity):
+            response = await handler(request)
+            if (not isinstance(response, ModelResponse) or len(response.result) != 1
+                    or not isinstance(response.result[0], AIMessage)):
+                raise AgentBoundaryError("Unexpected execution model response")
+            if self.host.workflow_version in {"stage-agent-v7", "stage-agent-v8", "stage-agent-v9", "stage-agent-v10"}:
+                calls = response.result[0].tool_calls
+                if any(call.get("name") == "ask_user" for call in calls) and len(calls) != 1:
+                    raise AgentBoundaryError("Clarification must be the sole tool call")
+            return {"messages": [message.model_dump(mode="json") for message in response.result]}
+
+        transport = ("compatible-native-stream-v1" if
+                     getattr(request.model, "omni_normalize_stream_usage", False)
+                     and getattr(request.model, "streaming", False) else "ainvoke_default")
+        saved, _ = await run_provider_call(host=self.host, role="execute", root=root, policy=policy,
+            dispatch=dispatch, on_reserved_factory=reservation_callback, transport_mode=transport)
+        messages = [AIMessage.model_validate(item) for item in saved["messages"]]
+        for message in messages:
+            require_complete_output(message, allow_tools=True)
+        return ModelResponse(result=messages)
 
     async def awrap_tool_call(self, request, handler):
         del handler  # A model never reaches the unguarded placeholder function.

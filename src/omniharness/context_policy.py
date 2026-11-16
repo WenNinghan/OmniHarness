@@ -103,6 +103,9 @@ class ContextPolicyV3(ContextPolicyV2):
     replayed_reasoning: str = "count"
     mask_tool_results: bool = True
     mask_keep_recent_exchanges: int = 4
+    # Opt in only: if hard admission still fails after ordinary masking, allow
+    # saved completed results within the recent exchanges to become pointers.
+    pressure_mask_keep_recent_exchanges: int | None = None
     summary_failure: str = "degrade"
 
     def __post_init__(self):
@@ -113,6 +116,13 @@ class ContextPolicyV3(ContextPolicyV2):
             raise ContextPolicyError("CONTEXT_CONFIG", "mask_tool_results must be a boolean")
         if type(self.mask_keep_recent_exchanges) is not int or not 1 <= self.mask_keep_recent_exchanges <= 20:
             raise ContextPolicyError("CONTEXT_CONFIG", "mask_keep_recent_exchanges must be between 1 and 20")
+        pressure_keep = self.pressure_mask_keep_recent_exchanges
+        if pressure_keep is not None and (
+            type(pressure_keep) is not int or not 0 <= pressure_keep < self.mask_keep_recent_exchanges
+        ):
+            raise ContextPolicyError(
+                "CONTEXT_CONFIG", "pressure_mask_keep_recent_exchanges must be below mask_keep_recent_exchanges",
+            )
         if self.summary_failure not in {"degrade", "fail"}:
             raise ContextPolicyError("CONTEXT_CONFIG", "summary_failure must be degrade or fail")
 
@@ -154,8 +164,16 @@ def parse_context_configuration(value: dict | None) -> tuple[ContextPolicy, Mode
         raise ContextPolicyError("CONTEXT_CONFIG", "Unsupported context policy or limit fields") from None
 
 
+def context_policy_dict(policy: ContextPolicy) -> dict:
+    """Canonical frozen policy, preserving pre-extension V3 summary identities."""
+    data = asdict(policy)
+    if isinstance(policy, ContextPolicyV3) and policy.pressure_mask_keep_recent_exchanges is None:
+        data.pop("pressure_mask_keep_recent_exchanges")
+    return data
+
+
 def context_configuration_dict(policy: ContextPolicy, limits: ModelContextLimits) -> dict:
-    return {"schema_version": 1, "policy": asdict(policy), "model_limits": asdict(limits)}
+    return {"schema_version": 1, "policy": context_policy_dict(policy), "model_limits": asdict(limits)}
 
 
 @dataclass(frozen=True)

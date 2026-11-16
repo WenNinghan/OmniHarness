@@ -57,9 +57,12 @@ class ModelConfigRequest(StrictModel):
     @field_validator("parameters")
     @classmethod
     def parameter_allowlist(cls, value):
-        allowed = {"temperature", "top_p", "reasoning_effort", "seed", "top_k", "thinking"}
+        from .request_policy import REQUEST_POLICY_KEY, parse_request_policy
+
+        allowed = {"temperature", "top_p", "reasoning_effort", "seed", "top_k", "thinking", REQUEST_POLICY_KEY}
         if not set(value).issubset(allowed):
             raise ValueError("unsupported or reserved provider parameters")
+        parse_request_policy(value)
         return value
 
     @model_validator(mode="after")

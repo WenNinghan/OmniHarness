@@ -7,13 +7,17 @@ import pytest
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from test_context_runtime import HostExecutor, prepare, request
 
+from omniharness.artifacts import ArtifactStore
+from omniharness.context_admission import context_admission_diagnostic, safe_admission_diagnostic
 from omniharness.context_policy import (
     ContextPolicy,
     ContextPolicyError,
     ContextPolicyV2,
     ContextPolicyV3,
+    ModelContextLimits,
     UnicodeContextCounter,
     context_configuration_dict,
+    context_policy_dict,
     counter_for_policy,
     parse_context_configuration,
 )
@@ -24,6 +28,7 @@ from omniharness.context_runtime import (
     mask_older_tool_results,
     masked_tool_message,
 )
+from omniharness.models import ArtifactVersion
 
 RUN = "run-1"  # request() scope run_id
 
@@ -57,6 +62,8 @@ def test_v3_is_explicit_and_older_versions_are_unchanged():
     assert (v3.input_target_tokens, v3.keep_recent_tokens) == (32000, 8000)
     assert (v3.replayed_reasoning, v3.mask_tool_results, v3.mask_keep_recent_exchanges,
             v3.summary_failure) == ("count", True, 4, "degrade")
+    assert v3.pressure_mask_keep_recent_exchanges is None
+    assert (v3.max_messages, v3.max_characters) == (100, 200_000)
     assert parse_context_configuration(context_configuration_dict(v3, limits))[0] == v3
     # v2 serialization did not gain v3 fields.
     assert "mask_tool_results" not in asdict(ContextPolicyV2())
@@ -66,6 +73,8 @@ def test_v3_is_explicit_and_older_versions_are_unchanged():
     {"replayed_reasoning": "auto"}, {"mask_tool_results": 1}, {"mask_keep_recent_exchanges": 0},
     {"mask_keep_recent_exchanges": 21}, {"mask_keep_recent_exchanges": True}, {"summary_failure": "retry"},
     {"summary_recovery_attempts": 2},  # inherited v2 bound still applies
+    {"pressure_mask_keep_recent_exchanges": True}, {"pressure_mask_keep_recent_exchanges": -1},
+    {"pressure_mask_keep_recent_exchanges": 4}, {"pressure_mask_keep_recent_exchanges": 1.5},
 ])
 def test_v3_rejects_unbounded_or_unknown_values(change):
     with pytest.raises(ContextPolicyError):
@@ -75,6 +84,25 @@ def test_v3_rejects_unbounded_or_unknown_values(change):
 def test_v2_payload_with_v3_fields_is_rejected():
     with pytest.raises(ContextPolicyError):
         parse_context_configuration({"policy": {"version": "context-v2", "summary_failure": "degrade"}})
+
+
+@pytest.mark.parametrize("keep", [0, 1, 3])
+def test_pressure_mask_is_an_explicit_frozen_v3_setting(keep):
+    value = {"policy": {"version": "context-v3", "pressure_mask_keep_recent_exchanges": keep}}
+    policy, limits = parse_context_configuration(value)
+    assert policy.pressure_mask_keep_recent_exchanges == keep
+    assert parse_context_configuration(context_configuration_dict(policy, limits)) == (policy, limits)
+    with pytest.raises(ContextPolicyError):
+        parse_context_configuration({"policy": {**value["policy"], "version": "context-v2"}})
+
+
+def test_disabled_pressure_mask_keeps_the_pre_extension_canonical_policy():
+    legacy = asdict(ContextPolicyV3())
+    legacy.pop("pressure_mask_keep_recent_exchanges")
+    assert context_policy_dict(ContextPolicyV3()) == legacy
+    assert context_policy_dict(ContextPolicyV3(pressure_mask_keep_recent_exchanges=0)) == {
+        **legacy, "pressure_mask_keep_recent_exchanges": 0,
+    }
 
 
 def test_replayed_reasoning_ignore_changes_only_the_explicit_v3_counter():
@@ -244,3 +272,230 @@ async def test_protected_goal_and_requirements_are_never_masked():
     prepared = await prepare(value, HostExecutor())
     assert "tool-99" not in prepared.masked_message_ids
     assert next(m for m in prepared.messages if m.id == "tool-99").content == result.content
+
+
+@pytest.mark.asyncio
+async def test_explicit_long_history_envelope_admits_150_short_natural_messages_without_summary():
+    messages = tuple((HumanMessage if index % 2 == 0 else AIMessage)(
+        id=f"step-{index}", content=f"Step {index}: inspect the module, then verify the stated requirement.",
+    ) for index in range(150))
+    host = HostExecutor()
+    prepared = await prepare(v3_request(messages, max_messages=200, max_characters=400_000), host)
+    assert not host.requests and not prepared.compacted and not prepared.masked_message_ids
+    assert [message.id for message in prepared.messages[1:-1]] == [message.id for message in messages]
+    assert len(prepared.source_manifest) == 152
+    assert prepared.input_tokens < prepared.input_limit
+
+
+@pytest.mark.asyncio
+async def test_explicit_long_character_envelope_is_not_shadowed_by_old_200k_guard():
+    text = "def calculate(value): return value + 1\n" * 6500
+    assert len(text) > 200_000
+    message = HumanMessage(id="long-source", content=text)
+    host = HostExecutor()
+    prepared = await prepare(v3_request([message], input_target_tokens=128_000,
+                                        max_characters=600_000), host)
+    assert not host.requests and not prepared.compacted
+    assert prepared.messages[1].content == text
+    assert prepared.input_limit == 128_000 and prepared.input_tokens < prepared.input_limit
+
+
+@pytest.mark.asyncio
+async def test_pressure_mask_is_not_used_for_only_a_soft_trigger():
+    messages = history(2, size=3200)
+    value = replace(v3_request(messages, input_target_tokens=16_000,
+                               pressure_mask_keep_recent_exchanges=0), soft_summary=False)
+    host = HostExecutor()
+    prepared = await prepare(value, host)
+    assert prepared.input_tokens >= int(prepared.input_limit * value.policy.summarize_at)
+    assert not prepared.masked_message_ids and not prepared.decisions and not host.requests
+    assert [message.content for message in prepared.messages[1:-1]] == [message.content for message in messages]
+
+
+@pytest.mark.asyncio
+async def test_recent_large_saved_artifact_pressure_mask_and_real_paged_readback(environment):
+    from conftest import create_chat
+
+    settings, _, factory, client = environment
+    _, _, run = create_chat(client)
+    run_id = run["run_id"]
+    store = ArtifactStore(settings.data_dir / "context-pressure-test")
+    original = json.dumps({"path": "large.py", "content": "模块实现\n" * 5000}, ensure_ascii=False)
+    with factory.begin() as db:
+        reference = store.put(db, run_id=run_id, kind="tool_result", name="large.json", content=original)
+    call, result = tool_exchange(0, size=0)
+    result = result.model_copy(update={"content": json.dumps(
+        {**json.loads(original), "artifacts": [reference]}, ensure_ascii=False)})
+    value = v3_request([call, result], input_target_tokens=4096, pressure_mask_keep_recent_exchanges=0)
+    value = replace(value, scope=replace(value.scope, run_id=run_id))
+    before = result.model_dump()
+    host = HostExecutor()
+    prepared = await prepare(value, host)
+    assert not host.requests and not prepared.compacted
+    assert prepared.decisions == ("tool_results_pressure_masked",)
+    assert prepared.masked_message_ids == ("tool-0",) and prepared.masked_tokens_saved > 0
+    stub = json.loads(prepared.messages[2].content)
+    assert stub["artifact_ids"] == [reference["id"]] and "artifact_read" in stub["hint"]
+    assert prepared.messages[0] == value.prefix_messages[0] and prepared.messages[-1] == value.suffix_messages[0]
+    assert result.model_dump() == before
+    interaction_groups(list(prepared.messages))
+    with factory() as db:
+        row = db.get(ArtifactVersion, stub["artifact_ids"][0])
+        pages, offset = [], 0
+        while offset < row.size_bytes:
+            page, offset = store.read_text_page(row, run_id=run_id, offset=offset, limit=4097)
+            pages.append(page)
+    assert len(pages) > 1 and "".join(pages) == original
+
+
+@pytest.mark.asyncio
+async def test_ordinary_and_pressure_mask_savings_and_ids_are_not_double_counted():
+    messages = history(6, size=3000)
+    value = v3_request(messages, input_target_tokens=4096, pressure_mask_keep_recent_exchanges=0)
+    host = HostExecutor()
+    prepared = await prepare(value, host)
+    assert not host.requests and not prepared.compacted
+    assert prepared.decisions == ("tool_results_masked", "tool_results_pressure_masked")
+    assert prepared.masked_message_ids == tuple(f"tool-{index}" for index in range(6))
+    counter = counter_for_policy(value.policy)
+    before = counter.count([value.system_message, *value.prefix_messages, *messages, *value.suffix_messages])
+    assert prepared.masked_tokens_saved == before - prepared.input_tokens
+    interaction_groups(list(prepared.messages))
+
+
+@pytest.mark.asyncio
+async def test_pressure_mask_default_still_leaves_recent_large_results_unmasked():
+    host = HostExecutor()
+    with pytest.raises(ContextPreparationError) as captured:
+        await prepare(v3_request(history(1, size=5000), input_target_tokens=4096), host)
+    assert captured.value.code == "CONTEXT_GROUP_LIMIT" and not host.requests
+    assert captured.value.diagnostic["reason"] == "input_tokens"
+
+
+@pytest.mark.asyncio
+async def test_pressure_mask_keeps_its_explicit_recent_exchange_and_parallel_pairs():
+    messages = history(6, size=3000)
+    host = HostExecutor()
+    prepared = await prepare(v3_request(messages, input_target_tokens=16_000,
+                                        pressure_mask_keep_recent_exchanges=1), host)
+    assert not host.requests and not prepared.compacted
+    assert prepared.masked_message_ids == tuple(f"tool-{index}" for index in range(5))
+    assert prepared.messages[-2].content == messages[-1].content
+    first_call, first_result = tool_exchange(20)
+    second_call, second_result = tool_exchange(21)
+    parallel_call = first_call.model_copy(update={"tool_calls": first_call.tool_calls + second_call.tool_calls})
+    prepared = await prepare(v3_request([parallel_call, first_result, second_result],
+                                        input_target_tokens=4096, pressure_mask_keep_recent_exchanges=0), host)
+    assert not host.requests and prepared.masked_message_ids == ("tool-20", "tool-21")
+    groups = interaction_groups(list(prepared.messages))
+    assert len(groups[1]) == 3 and groups[1][0].tool_calls == parallel_call.tool_calls
+
+
+@pytest.mark.parametrize("change", [
+    {"state": "UNKNOWN"}, {"status": "uncertain"}, {"error": "RESULT_UNKNOWN"},
+    {"error_code": "RESULT_UNKNOWN"}, {"output_status": "partial"}, {"result_status": "running"},
+    {"complete": False},
+])
+def test_pressure_mask_never_hides_unfinished_or_unknown_result(change):
+    call, result = tool_exchange(0)
+    data = {**json.loads(result.content), **change}
+    result = result.model_copy(update={"content": json.dumps(data, ensure_ascii=False)})
+    assert mask_older_tool_results([call, result], RUN, 0, require_completed=True) == [call, result]
+
+
+def test_pressure_mask_rejects_partial_artifact_even_with_successful_tool_message():
+    _, result = tool_exchange(0)
+    data = json.loads(result.content)
+    data["artifacts"][0]["metadata_json"] = {"complete": False}
+    result = result.model_copy(update={"content": json.dumps(data, ensure_ascii=False)})
+    assert masked_tool_message(result, RUN, require_completed=True) is None
+    assert masked_tool_message(result.model_copy(update={"status": "error"}), RUN, require_completed=True) is None
+
+
+@pytest.mark.asyncio
+async def test_opted_in_ordinary_mask_also_preserves_older_unknown_results():
+    messages = list(history(6, size=300))
+    unknown = json.loads(messages[1].content)
+    unknown["state"] = "UNKNOWN"
+    messages[1] = messages[1].model_copy(update={"content": json.dumps(unknown, ensure_ascii=False)})
+    host = HostExecutor()
+    value = replace(v3_request(messages, input_target_tokens=4096,
+                               pressure_mask_keep_recent_exchanges=0), soft_summary=False)
+    prepared = await prepare(value, host)
+    assert not host.requests and "tool-0" not in prepared.masked_message_ids
+    assert prepared.messages[2].content == messages[1].content
+
+
+@pytest.mark.parametrize("kwargs", [{"artifacts": False}, {"run_id": "another-run"}])
+def test_pressure_mask_requires_own_saved_artifact(kwargs):
+    call, result = tool_exchange(0, **kwargs)
+    assert mask_older_tool_results([call, result], RUN, 0, require_completed=True) == [call, result]
+
+
+@pytest.mark.asyncio
+async def test_pressure_mask_cannot_bypass_incomplete_tool_pair_or_protected_requirement():
+    call, result = tool_exchange(0, size=5000)
+    host = HostExecutor()
+    with pytest.raises(ContextPreparationError) as captured:
+        await prepare(v3_request([call], pressure_mask_keep_recent_exchanges=0), host)
+    assert captured.value.code == "CONTEXT_TOOL_PAIR" and not host.requests
+    value = replace(v3_request([], input_target_tokens=4096, pressure_mask_keep_recent_exchanges=0),
+                    prefix_messages=(HumanMessage(id="goal", content="Immutable objective"), call, result))
+    with pytest.raises(ContextPreparationError) as captured:
+        await prepare(value, host)
+    assert captured.value.code == "CONTEXT_LIMIT" and not host.requests
+    assert captured.value.diagnostic == {
+        "reason": "input_tokens", "observed": counter_for_policy(value.policy).count(
+            [value.system_message, *value.prefix_messages, *value.suffix_messages]),
+        "limit": 4096, "window_known": False,
+    }
+
+
+@pytest.mark.asyncio
+async def test_real_known_window_still_bounds_explicit_long_policy_without_summary():
+    secret = "private protected objective " * 450
+    host = HostExecutor()
+    value = replace(v3_request([], input_target_tokens=128_000, max_messages=256, max_characters=600_000),
+                    prefix_messages=(HumanMessage(id="goal", content=secret),), main_output_tokens=1000,
+                    model_limits=ModelContextLimits(context_window_tokens=5500))
+    with pytest.raises(ContextPreparationError) as captured:
+        await prepare(value, host)
+    diagnostic = captured.value.diagnostic
+    assert diagnostic["reason"] == "input_tokens" and diagnostic["limit"] == 3476
+    assert diagnostic["observed"] > diagnostic["limit"] and diagnostic["window_known"] is True
+    assert set(diagnostic) == {"reason", "observed", "limit", "window_known"}
+    assert secret not in str(captured.value) + json.dumps(diagnostic)
+    assert not host.requests
+
+
+@pytest.mark.parametrize("override, expected", [
+    ({"message_count": 101}, {"reason": "message_count", "observed": 101, "limit": 100}),
+    ({"serialized_characters": 200_001},
+     {"reason": "serialized_characters", "observed": 200_001, "limit": 200_000}),
+    ({"input_tokens": 32_001}, {"reason": "input_tokens", "observed": 32_001, "limit": 32_000}),
+])
+def test_admission_diagnostic_is_bounded_and_reports_frozen_guard(override, expected):
+    counts = {"input_tokens": 1, "input_limit": 32_000, "message_count": 1, "message_limit": 100,
+              "serialized_characters": 1, "character_limit": 200_000, "window_known": False}
+    assert context_admission_diagnostic(**counts) is None
+    assert context_admission_diagnostic(**{**counts, **override}) == {**expected, "window_known": False}
+
+
+@pytest.mark.parametrize("change", [
+    {"body": "private conversation"}, {"reason": "private conversation"}, {"observed": "private conversation"},
+    {"observed": True}, {"limit": 0}, {"limit": -1}, {"observed": float("inf")},
+    {"observed": 2**63}, {"observed": 100}, {"window_known": 1},
+])
+def test_persisted_admission_diagnostic_rejects_arbitrary_or_unbounded_detail(change):
+    detail = {"reason": "message_count", "observed": 101, "limit": 100, "window_known": False}
+    assert safe_admission_diagnostic({**detail, **change}) is None
+    assert ContextPreparationError("CONTEXT_LIMIT", "Input rejected", diagnostic={**detail, **change}).diagnostic is None
+
+
+def test_persisted_admission_diagnostic_copies_only_exact_rejection_facts():
+    detail = {"reason": "message_count", "observed": 101, "limit": 100, "window_known": False}
+    safe = safe_admission_diagnostic(detail)
+    assert safe == detail and safe is not detail
+    detail["observed"] = 999
+    assert safe["observed"] == 101
+    assert safe_admission_diagnostic(None) is None

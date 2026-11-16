@@ -11,7 +11,9 @@ permissions:
 jobs:
   backend:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    # The expanded backend suite has taken about 18 minutes locally.
+    # Allow setup and runner variance without reducing test coverage.
+    timeout-minutes: 30
     services:
       postgres:
         image: postgres:17
