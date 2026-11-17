@@ -27,7 +27,13 @@ from .request_diagnostics import (
 
 _NATIVE_REASONING = ("reasoning_content", "reasoning", "reasoning_text", "reasoning_details")
 _USAGE_VALIDITY = "_omni_usage_validity"
-_TERMINAL_REASONS = {"stop", "tool_calls", "function_call", "length", "content_filter"}
+_TERMINAL_REASONS = {
+    "stop", "end_turn", "stop_sequence", "completed",
+    "tool_calls", "function_call", "tool_use", "tool-calls",
+    "length", "max_tokens", "max_output_tokens", "max-tokens",
+    "content_filter", "safety", "recitation", "blocklist", "prohibited_content", "refusal",
+}
+_INCOMPLETE_REASONS = {"missing_finish", "invalid_finish", "conflicting_finish"}
 
 
 def _valid_cumulative_usage(usage) -> bool:
@@ -67,8 +73,11 @@ class _CumulativeStream:
         message_finish = chunk.message.response_metadata.pop("finish_reason", None)
         finish = info.pop("finish_reason", None) or message_finish
         if finish is not None:
-            if finish not in _TERMINAL_REASONS or (self.finish is not None and finish != self.finish):
-                self._incomplete()
+            normalized = finish.lower() if isinstance(finish, str) else None
+            if normalized not in _TERMINAL_REASONS:
+                self._incomplete("invalid_finish")
+            if self.finish is not None and normalized != self.finish.lower():
+                self._incomplete("conflicting_finish")
             self.finish = finish
         if valid is False:
             self.invalid_usage = True
@@ -87,14 +96,17 @@ class _CumulativeStream:
         return chunk
 
     @staticmethod
-    def _incomplete():
+    def _incomplete(reason: str = "missing_finish"):
         from .providers import ProviderError
 
-        raise ProviderError("OUTPUT_INCOMPLETE", "模型流缺少有效结束标记，结果仍未知。")
+        error = ProviderError("OUTPUT_INCOMPLETE", "模型流缺少有效结束标记，结果仍未知。")
+        if reason in _INCOMPLETE_REASONS:
+            error.omni_incomplete_reason = reason
+        raise error
 
     def final(self):
         if self.finish is None:
-            self._incomplete()
+            self._incomplete("missing_finish")
         usage = self.usage if self.terminal_usage and not self.invalid_usage else None
         # A single final increment avoids double counting cumulative frames,
         # and allows a later malformed/decreasing frame to invalidate usage.

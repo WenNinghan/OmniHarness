@@ -36,7 +36,10 @@ DEFAULT_EXCLUDES = (
     ".omniharness", ".codex", "secrets", "credentials", "credentials.*",
     "*.pem", "*.key", "*.p12", "*.pfx", "id_rsa*", "id_ed25519*",
 )
-_RESERVED = re.compile(r"^(con|prn|aux|nul|com[0-9]|lpt[0-9])(?:\.|$)", re.I)
+_RESERVED = re.compile(
+    r"^(con|prn|aux|nul|conin\$|conout\$|com(?:[0-9]|[\u00b9\u00b2\u00b3])|lpt(?:[0-9]|[\u00b9\u00b2\u00b3]))$",
+    re.I,
+)
 
 
 @dataclass(frozen=True)
@@ -86,7 +89,8 @@ def _relative(value: str, *, directory: bool = False) -> str:
     parts = value.split("/")
     if any(
         part in ("", ".", "..") or part.endswith((".", " "))
-        or _RESERVED.match(part) or any(ord(c) < 32 or c in ':<>"|?*' for c in part)
+        or _RESERVED.match(part.split(".", 1)[0].rstrip(" "))
+        or any(ord(c) < 32 or c in ':<>"|?*' for c in part)
         for part in parts
     ):
         _fail("invalid_path", "Ambiguous or escaping paths are not permitted.")
@@ -519,7 +523,10 @@ class WorkspaceIO:
             os.fsync(stream.fileno())
 
     def _recovery(self, directory, grant, path, original, before, payload, run_id) -> dict:
-        directory.mkdir(parents=True, exist_ok=False)
+        try:
+            directory.mkdir(parents=True, exist_ok=False)
+        except FileExistsError:
+            _fail("operation_exists", "Operation already has recovery material; consult its ledger before retry.")
         with (directory / "before.bin").open("xb") as stream:
             stream.write(original)
             stream.flush()

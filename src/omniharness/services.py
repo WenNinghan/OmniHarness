@@ -283,6 +283,7 @@ def run_output(run):
     output["execution_config"] = {
         "workflow_version": run.workflow_version,
         "budget": (snapshot.get("agent") or {}).get("budget"),
+        "review_failure_policy": (snapshot.get("agent") or {}).get("review_failure_policy", "fail"),
         "models": {role: {**{key: (value.get("model") or {}).get(key) for key in (
             "id", "model_name", "version", "max_output_tokens", "context_policy",
         )}, "transport": NATIVE_AGENT_STREAM if agent_streaming_enabled(
@@ -290,6 +291,8 @@ def run_output(run):
             for role, value in roles.items()},
         "sandbox": workspace.get("sandbox"),
     }
+    outcome = run.outcome if isinstance(run.outcome, dict) else {}
+    output["review_status"] = outcome.get("review_status")
     if run.workflow_version == "stage-agent-v10":
         contract = snapshot.get("action_contract") or {}
         output["action_contract"] = {
@@ -1094,8 +1097,10 @@ def freeze_stage_run_config(db, run, settings, *, stage_overrides=None, strategy
                          "model": snapshot(chosen or run.model_config_id)}
     limits = budget_limits(settings)
     selected_version = settings.stage_workflow_version
+    review_policy = getattr(settings, "review_failure_policy", "fail") if settings is not None else "fail"
     run.config_snapshot = {**snapshot(run.model_config_id), "workflow_type": "agent", "agent": {
         "workflow_version": selected_version, "role_binding_version": binding_set.version,
-        "roles": frozen, "override_request": override_request, "plugin_versions": {}, "budget": asdict(limits)}}
+        "roles": frozen, "override_request": override_request, "plugin_versions": {}, "budget": asdict(limits),
+        **({"review_failure_policy": review_policy} if review_policy != "fail" else {})}}
     run.workflow_version, run.thread_id = selected_version, run.id
     ensure_budget(db, run.id, limits)

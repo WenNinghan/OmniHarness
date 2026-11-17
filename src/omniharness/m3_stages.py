@@ -20,10 +20,12 @@ from .m3_agents import (
     AgentBoundaryError,
     AgentBudgetExceeded,
     AgentContextLimitExceeded,
+    AgentExternalCallFailed,
     InvocationIdentity,
     _raise_sanitized,
 )
 from .m4_contract import (
+    COLLAB_WORKFLOW_VERSION,
     COLLAB_WORKFLOWS,
     EVIDENCE_WORKFLOW_VERSION,
     HANDOFF_WORKFLOW_VERSION,
@@ -133,6 +135,7 @@ class StageState(TypedDict, total=False):
     execution: str
     review: str
     review_data: dict
+    review_status: str
     stage_outputs: dict
     task_results: Annotated[list[dict], add]
     task: dict
@@ -140,6 +143,105 @@ class StageState(TypedDict, total=False):
     task_goal: str
     interaction_decision: dict
     task_answers: dict
+
+
+REVIEW_DEGRADED_REASONS = {
+    "INVALID_OUTPUT": "审查模型返回格式不符合结构化契约；原始回复已保留在调用记录中，未生成模型审查结论。",
+    "INCOMPLETE": "审查模型输出被截断或未完整结束；已收到的内容保存在调用记录中，未生成模型审查结论。",
+    "UNKNOWN": "审查请求因网络、超时或上游中断未能确认结果；原请求保持待核对状态且不会自动重发，未生成模型审查结论。",
+    "NOT_RUN_BUDGET": "审查阶段前模型或时间预算已耗尽，本次未发起独立审查请求。",
+}
+_REVIEW_INCOMPLETE_CODES = {
+    "OUTPUT_INCOMPLETE", "OUTPUT_TRUNCATED", "OUTPUT_FILTERED",
+    "UNEXPECTED_TOOL_CALL", "REASONING_ONLY", "EMPTY_RESPONSE",
+}
+
+
+def _degradable_review_reason(exc: BaseException) -> str | None:
+    if isinstance(exc, AgentBudgetExceeded):
+        return "NOT_RUN_BUDGET"
+    if isinstance(exc, ProviderError):
+        return "INCOMPLETE" if exc.code in _REVIEW_INCOMPLETE_CODES else None
+    if isinstance(exc, StageOutputError):
+        if exc.output is not None or exc.code in _REVIEW_INCOMPLETE_CODES:
+            return "INCOMPLETE"
+        return "INVALID_OUTPUT" if exc.code == "STAGE_OUTPUT_INVALID" else None
+    if isinstance(exc, AgentExternalCallFailed):
+        from sqlalchemy.exc import SQLAlchemyError
+
+        from .checkpoint_fencing import FencingError
+        from .m3_budget import ReservationConflict
+        from .m3_delegation import DelegationDrainTimeout
+        from .m3_host import AgentCancellationRequested, AgentControlPending, AgentOperationNeedsReview
+        from .request_diagnostics import exception_chain
+        from .services import ServiceError
+        from .worker import WorkerOwnershipLost
+
+        non_degradable = (
+            FencingError, SQLAlchemyError, WorkerOwnershipLost, DelegationDrainTimeout,
+            ReservationConflict, AgentOperationNeedsReview, AgentCancellationRequested,
+            AgentControlPending, ServiceError,
+        )
+        if any(isinstance(item, non_degradable) for item, _ in exception_chain(exc)):
+            return None
+        return "UNKNOWN"
+    return None
+
+
+async def _degrade_review_if_safe(hooks, state, *, reason: str, raw_text: str | None = None,
+                                  save_raw_artifact: bool = False) -> dict | None:
+    await hooks.check_control("model_calls", "review", None)
+    if getattr(hooks, "has_uncertain_tools", False):
+        return None
+    if hasattr(hooks, "worker"):
+        from sqlalchemy import select
+
+        from .artifacts import ArtifactStore
+        from .models import OperationRecord, ToolOperation
+        from .services import add_event
+
+        async with hooks.serial:
+            with hooks.worker.transaction() as db:
+                run, _ = hooks._run(db, "review", allow_supplements=True)
+                unsafe_tool = db.scalar(select(ToolOperation.id).where(
+                    ToolOperation.run_id == hooks.run_id,
+                    ToolOperation.status.in_(["dispatched", "running", "uncertain", "awaiting_approval"])
+                    | ToolOperation.slot_claimed.is_(True),
+                ).limit(1))
+                if unsafe_tool is not None:
+                    return None
+                still_running = db.scalar(select(OperationRecord.operation_id).where(
+                    OperationRecord.run_id == hooks.run_id,
+                    OperationRecord.status == "running",
+                ).limit(1))
+                if still_running is not None:
+                    return None
+                other_uncertain = db.scalar(select(OperationRecord.operation_id).where(
+                    OperationRecord.run_id == hooks.run_id,
+                    OperationRecord.status == "uncertain",
+                    OperationRecord.node_id != "agent:review:model_calls",
+                ).limit(1))
+                if other_uncertain is not None:
+                    return None
+                artifact = None
+                if save_raw_artifact and isinstance(raw_text, str) and raw_text.strip():
+                    artifact = ArtifactStore(hooks.worker.settings.data_dir / "artifacts").put(
+                        db, run_id=hooks.run_id, kind="review_raw_output", name="review-raw.txt",
+                        content=raw_text[:1024 * 1024],
+                        metadata={"review_status": reason, "claim_support": "UNVERIFIED",
+                                  "truncated": len(raw_text) > 1024 * 1024})
+                add_event(db, run, "agent.review_degraded", {
+                    "reason": reason, "claim_support": "UNVERIFIED",
+                    **({"raw_artifact_id": artifact["id"]} if artifact is not None else {}),
+                })
+    review_data = {"status": "UNAVAILABLE", "reason": reason, "claim_support": "UNVERIFIED"}
+    review_text = f"未完成（{reason}）：{REVIEW_DEGRADED_REASONS[reason]}"
+    return {
+        "stage_outputs": {**state.get("stage_outputs", {}), "review": json.dumps(review_data, ensure_ascii=False)},
+        "review": review_text,
+        "review_data": review_data,
+        "review_status": reason,
+    }
 
 
 def _digest(value):
@@ -163,14 +265,20 @@ def _parse(content: str, schema):
 
 
 def build_stage_graph(*, models, hooks, checkpointer, max_context_messages=100, max_context_characters=200_000,
-                      workflow_version=STAGE_WORKFLOW_VERSION, execution_agent=None, execution_strategy="staged"):
+                      workflow_version=STAGE_WORKFLOW_VERSION, execution_agent=None, execution_strategy="staged",
+                      review_failure_policy="fail"):
     """Build a versioned durable five-stage graph (external tools not available)."""
     if workflow_version not in (STAGE_V1_WORKFLOW_VERSION, STAGE_WORKFLOW_VERSION, INTERACTIVE_STAGE_WORKFLOW_VERSION, *WORKSPACE_WORKFLOWS):
         raise ValueError("Unsupported stage workflow version")
+    if review_failure_policy not in ("fail", "deliver_unreviewed"):
+        raise ValueError("Unsupported review failure policy")
     tools_enabled = workflow_version in WORKSPACE_WORKFLOWS
     collaboration = workflow_version in COLLAB_WORKFLOWS
     interactive = workflow_version in {INTERACTIVE_STAGE_WORKFLOW_VERSION, INTERACTIVE_WORKFLOW_VERSION, INTERACTIVE_COMPAT_WORKFLOW_VERSION, INTERACTIVE_V9_WORKFLOW_VERSION, INTERACTIVE_V10_WORKFLOW_VERSION}
     handoff_enabled = workflow_version in {HANDOFF_WORKFLOW_VERSION, EVIDENCE_WORKFLOW_VERSION, INTERACTIVE_WORKFLOW_VERSION, INTERACTIVE_COMPAT_WORKFLOW_VERSION, INTERACTIVE_V9_WORKFLOW_VERSION, INTERACTIVE_V10_WORKFLOW_VERSION}
+    degrade_review = (review_failure_policy == "deliver_unreviewed"
+                      and workflow_version in {COLLAB_WORKFLOW_VERSION, HANDOFF_WORKFLOW_VERSION, EVIDENCE_WORKFLOW_VERSION}
+                      and execution_strategy in {"compact", "staged"})
     if (execution_strategy not in ("staged", "single", "compact")
             or execution_strategy == "single" and not tools_enabled
             or execution_strategy == "compact" and not collaboration):
@@ -318,7 +426,7 @@ def build_stage_graph(*, models, hooks, checkpointer, max_context_messages=100, 
             try:
                 content = require_complete_output(response).strip()
             except ProviderError as exc:
-                if not evidence_review:
+                if not evidence_review and not (stage == "review" and degrade_review):
                     raise
                 if evidence_review and extract_output(response).text.strip():
                     from .review_evidence import persist_review_evidence
@@ -387,90 +495,108 @@ def build_stage_graph(*, models, hooks, checkpointer, max_context_messages=100, 
         async def call(state, config):
             messages = convert_to_messages(state["messages"])
             evidence_review = workflow_version in {EVIDENCE_WORKFLOW_VERSION, INTERACTIVE_WORKFLOW_VERSION, INTERACTIVE_COMPAT_WORKFLOW_VERSION, INTERACTIVE_V9_WORKFLOW_VERSION, INTERACTIVE_V10_WORKFLOW_VERSION} and stage == "review"
-            called = await call_model(stage, messages, config)
-            if evidence_review:
-                response, content, identity = called
-            else:
-                response, content = called
-            outputs = {**state.get("stage_outputs", {}), stage: content}
-            result = {"messages": [*messages, response], "stage_outputs": outputs}
-            if stage == "plan":
-                if collaboration:
-                    from .m4_collaboration import CollaborationPlan
-                    if workflow_version == INTERACTIVE_V10_WORKFLOW_VERSION:
-                        value = content.strip()
-                        match = re.fullmatch(r"```(?:json)?\s*\n?(.*?)\n?```", value,
-                                             flags=re.DOTALL | re.IGNORECASE)
-                        try:
-                            raw = json.loads(match.group(1).strip() if match else value)
-                            if not isinstance(raw, dict):
-                                raise ValueError
-                            candidates = raw.pop("action_candidates", None)
-                            result["plan"] = CollaborationPlan.model_validate(raw).model_dump(mode="json")
-                        except (ValueError, TypeError, ValidationError):
-                            raise StageOutputError("Stage produced invalid structured output") from None
-                        await save_v10_actions(candidates)
-                    else:
-                        result["plan"] = _parse(content, CollaborationPlan).model_dump(mode="json")
-                else:
-                    result["plan"] = _parse(content, Plan).model_dump(mode="json")
-            elif stage == "dispatch":
-                dispatch = _parse(content, Dispatch)
-                steps = {s["id"] for s in state.get("plan", {}).get("steps", [])}
-                if {t.step_id for t in dispatch.tasks} != steps:
-                    raise StageOutputError("Dispatch must cover each planned step")
-                # A dispatcher may add dependencies, but cannot silently erase
-                # the plan's prerequisites, including indirect task links.
-                task_map = {t.id: t for t in dispatch.tasks}
-                step_deps = {s["id"]: set(s["depends_on"]) for s in state["plan"]["steps"]}
-                for task in dispatch.tasks:
-                    ancestors, frontier = set(), list(task.depends_on)
-                    while frontier:
-                        dependency = frontier.pop()
-                        if dependency not in ancestors:
-                            ancestors.add(dependency)
-                            frontier.extend(task_map[dependency].depends_on)
-                    required = {t.id for t in dispatch.tasks if t.step_id in step_deps[task.step_id]}
-                    if not required.issubset(ancestors):
-                        raise StageOutputError("Dispatch removed a planned dependency")
-                result["dispatch"] = dispatch.model_dump(mode="json")
-                if collaboration:
-                    from .m4_collaboration import enrich_tasks
-                    result["dispatch"] = enrich_tasks(result["dispatch"], state["plan"])
-                    if workflow_version == INTERACTIVE_V10_WORKFLOW_VERSION:
-                        await bind_v10_tasks(result["dispatch"])
-            elif stage == "review":
+            content = None
+            try:
+                called = await call_model(stage, messages, config)
                 if evidence_review:
-                    from .review_contract import ReviewV6
-                    from .review_evidence import persist_review_evidence, render_review_evidence
-                    schema = ReviewV6
-                    if workflow_version in {INTERACTIVE_V9_WORKFLOW_VERSION, INTERACTIVE_V10_WORKFLOW_VERSION}:
-                        from .review_contract import ReviewV9
-                        schema = ReviewV9
-                    try:
-                        review = _parse(content, schema)
-                    except StageOutputError:
-                        # Preserve the public model response with the invocation;
-                        # never manufacture a successful structured review.
-                        await persist_review_evidence(hooks, identity, content)
-                        raise
-                    report = await persist_review_evidence(hooks, identity, content, review)
-                    result["review"] = render_review_evidence(report)
-                    result["review_data"] = report
-                    result["stage_outputs"] = {**outputs, "review": result["review"]}
-                elif workflow_version == STAGE_V1_WORKFLOW_VERSION:
-                    result["review"] = content
+                    response, content, identity = called
                 else:
-                    review = _parse(content, Review)
-                    lines = [review.summary]
-                    lines.extend(f"[{item.severity}/{item.status}] {item.location}：{item.description}"
-                                 + (f"；建议：{item.recommendation}" if item.recommendation else "")
-                                 for item in review.findings)
-                    if review.unverified:
-                        lines.append("未验证：" + "；".join(review.unverified))
-                    result["review"] = "\n".join(lines)
-                    result["review_data"] = review.model_dump(mode="json")
-            return result
+                    response, content = called
+                outputs = {**state.get("stage_outputs", {}), stage: content}
+                result = {"messages": [*messages, response], "stage_outputs": outputs}
+                if stage == "plan":
+                    if collaboration:
+                        from .m4_collaboration import CollaborationPlan
+                        if workflow_version == INTERACTIVE_V10_WORKFLOW_VERSION:
+                            value = content.strip()
+                            match = re.fullmatch(r"```(?:json)?\s*\n?(.*?)\n?```", value,
+                                                 flags=re.DOTALL | re.IGNORECASE)
+                            try:
+                                raw = json.loads(match.group(1).strip() if match else value)
+                                if not isinstance(raw, dict):
+                                    raise ValueError
+                                candidates = raw.pop("action_candidates", None)
+                                result["plan"] = CollaborationPlan.model_validate(raw).model_dump(mode="json")
+                            except (ValueError, TypeError, ValidationError):
+                                raise StageOutputError("Stage produced invalid structured output") from None
+                            await save_v10_actions(candidates)
+                        else:
+                            result["plan"] = _parse(content, CollaborationPlan).model_dump(mode="json")
+                    else:
+                        result["plan"] = _parse(content, Plan).model_dump(mode="json")
+                elif stage == "dispatch":
+                    dispatch = _parse(content, Dispatch)
+                    steps = {s["id"] for s in state.get("plan", {}).get("steps", [])}
+                    if {t.step_id for t in dispatch.tasks} != steps:
+                        raise StageOutputError("Dispatch must cover each planned step")
+                    # A dispatcher may add dependencies, but cannot silently erase
+                    # the plan's prerequisites, including indirect task links.
+                    task_map = {t.id: t for t in dispatch.tasks}
+                    step_deps = {s["id"]: set(s["depends_on"]) for s in state["plan"]["steps"]}
+                    for task in dispatch.tasks:
+                        ancestors, frontier = set(), list(task.depends_on)
+                        while frontier:
+                            dependency = frontier.pop()
+                            if dependency not in ancestors:
+                                ancestors.add(dependency)
+                                frontier.extend(task_map[dependency].depends_on)
+                        required = {t.id for t in dispatch.tasks if t.step_id in step_deps[task.step_id]}
+                        if not required.issubset(ancestors):
+                            raise StageOutputError("Dispatch removed a planned dependency")
+                    result["dispatch"] = dispatch.model_dump(mode="json")
+                    if collaboration:
+                        from .m4_collaboration import enrich_tasks
+                        result["dispatch"] = enrich_tasks(result["dispatch"], state["plan"])
+                        if workflow_version == INTERACTIVE_V10_WORKFLOW_VERSION:
+                            await bind_v10_tasks(result["dispatch"])
+                elif stage == "review":
+                    if evidence_review:
+                        from .review_contract import ReviewV6
+                        from .review_evidence import persist_review_evidence, render_review_evidence
+                        schema = ReviewV6
+                        if workflow_version in {INTERACTIVE_V9_WORKFLOW_VERSION, INTERACTIVE_V10_WORKFLOW_VERSION}:
+                            from .review_contract import ReviewV9
+                            schema = ReviewV9
+                        try:
+                            review = _parse(content, schema)
+                        except StageOutputError:
+                            # Preserve the public model response with the invocation;
+                            # never manufacture a successful structured review.
+                            await persist_review_evidence(hooks, identity, content)
+                            raise
+                        report = await persist_review_evidence(hooks, identity, content, review)
+                        result["review"] = render_review_evidence(report)
+                        result["review_data"] = report
+                        result["stage_outputs"] = {**outputs, "review": result["review"]}
+                    elif workflow_version == STAGE_V1_WORKFLOW_VERSION:
+                        result["review"] = content
+                    else:
+                        review = _parse(content, Review)
+                        lines = [review.summary]
+                        lines.extend(f"[{item.severity}/{item.status}] {item.location}：{item.description}"
+                                     + (f"；建议：{item.recommendation}" if item.recommendation else "")
+                                     for item in review.findings)
+                        if review.unverified:
+                            lines.append("未验证：" + "；".join(review.unverified))
+                        result["review"] = "\n".join(lines)
+                        result["review_data"] = review.model_dump(mode="json")
+                    if degrade_review:
+                        result["review_status"] = "COMPLETED"
+                return result
+            except Exception as exc:
+                if stage != "review" or not degrade_review:
+                    raise
+                reason = _degradable_review_reason(exc)
+                if reason is None:
+                    raise
+                raw_text = (exc.output.text if isinstance(exc, StageOutputError) and exc.output is not None
+                            else content)
+                degraded = await _degrade_review_if_safe(
+                    hooks, state, reason=reason, raw_text=raw_text, save_raw_artifact=not evidence_review,
+                )
+                if degraded is None:
+                    raise
+                return degraded
         return call
 
     async def save_v10_actions(candidates, role="plan"):
@@ -889,7 +1015,8 @@ def build_stage_graph(*, models, hooks, checkpointer, max_context_messages=100, 
         return {"messages": [*state["messages"], response]}
 
     def finish(state):
-        answer = ("执行结果：\n" + state["execution"] + "\n\n独立审查：\n" + state["review"]
+        heading = "独立审查未完成：" if state.get("review_status") in REVIEW_DEGRADED_REASONS else "独立审查："
+        answer = ("执行结果：\n" + state["execution"] + f"\n\n{heading}\n" + state["review"]
                   + ("\n\n工具记录与测试证据可在运行详情查看；快照中的改动不会自动写回原项目。" if tools_enabled
                      else "\n\n说明：本次流程没有文件、命令或联网工具，未执行外部验证。"))
         return {"messages": [*state["messages"], AIMessage(content=answer)]}

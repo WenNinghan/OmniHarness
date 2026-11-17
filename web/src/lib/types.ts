@@ -27,7 +27,7 @@ export interface Message {
   id: string; conversation_id: string; run_id: string | null; role: 'user' | 'assistant'
   content: string; status: string; created_at: string
   reasoning_content?: string
-  output_metadata?: { finish_reason?: string | null; output_status?: string | null; stage?: string; command_result_audit?: unknown }
+  output_metadata?: { finish_reason?: string | null; output_status?: string | null; stage?: string; command_result_audit?: unknown; review_status?: string | null }
   error_code?: string | null; error_message?: string | null
   history_scope?: HistoryScope | null; workspace_id?: string | null; run_status?: RunStatus | null
 }
@@ -75,6 +75,7 @@ export interface Run {
   id: string; conversation_id: string; model_config_id: string; model_label: string
   status: RunStatus; mode: 'live' | 'mock'; workflow_type?: WorkflowType; error_code: string | null; error_message: string | null
   workflow_version?: string | null
+  review_status?: string | null
   usage: Record<string, number | null> | null; created_at: string; started_at: string | null; finished_at: string | null
   stage_plan?: { stage: Stage; model_config_id: string; model_name: string; source: string }[] | null
   workspace_id?: string | null

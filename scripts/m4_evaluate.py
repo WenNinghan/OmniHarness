@@ -520,11 +520,14 @@ def validate_optimization_plan(plan):
 
 
 def optimization_models(plan, rows):
+    expected_context = plan.get("context_policy_version", "context-v2")
+    if expected_context not in {"context-v2", "context-v3"}:
+        raise EvaluationError("Unsupported optimization context policy version")
     selected, signature = model_preflight({"baseline_model_id": plan["strong_model_id"],
         "stage_models": {stage: plan["economy_model_id"] if stage == "execute" else plan["strong_model_id"]
                          for stage in STAGES}}, rows)
-    if signature["policy"]["version"] != "context-v2" or signature["max_output_tokens"] != 100000:
-        raise EvaluationError("All five conditions require the same context-v2 and 100K output cap")
+    if signature["policy"]["version"] != expected_context or signature["max_output_tokens"] != 100000:
+        raise EvaluationError(f"All five conditions require the same {expected_context} and 100K output cap")
     return selected, signature
 
 
@@ -730,9 +733,12 @@ async def calibrate_optimization(acceptance, output):
     return report
 
 
-def optimization_fairness(records, *, frozen_models=None, frozen_selection=None):
+def optimization_fairness(records, *, frozen_models=None, frozen_selection=None, expected_context_version=None):
     # Existing immutable metadata comparison is reused; only the expected
     # strategy label is normalized after validating the five real conditions.
+    required_context = expected_context_version or (frozen_selection or {}).get("context_policy_version", "context-v2")
+    if required_context not in {"context-v2", "context-v3"}:
+        return {"status": "FAIL", "reason": "Unsupported context policy version"}
     normalized = []
     for record in records:
         if record.get("agent_strategy") != STRATEGIES.get(record["condition"]):
@@ -762,8 +768,8 @@ def optimization_fairness(records, *, frozen_models=None, frozen_selection=None)
                     return {"status": "FAIL", "reason": "Formal stage model ID or version differs from its condition"}
         for model in actual_models.values():
             policy, _ = parse_context_configuration(model.get("context_policy"))
-            if policy.version != "context-v2" or model.get("max_output_tokens") != 100000:
-                return {"status": "FAIL", "reason": "A frozen model differs from context-v2/100K"}
+            if policy.version != required_context or model.get("max_output_tokens") != 100000:
+                return {"status": "FAIL", "reason": f"A frozen model differs from {required_context}/100K"}
             if record.get("split") == "formal":
                 binding = (frozen_models or {}).get(model.get("id"))
                 if not binding or not model.get("transport"):
@@ -834,7 +840,9 @@ def summarize_optimization(records):
         for record in selected:
             by_task.setdefault(record["task_id"], []).append(record["resolved"])
         result[condition] = {"planned": 18, "attempted": len(selected), "not_run": 18 - len(selected),
-            "resolved": len(resolved), "workflow_completed": sum(r["run_status"] == "completed" for r in selected),
+            "resolved": len(resolved),
+            "delivered_unreviewed": sum(bool(r.get("delivered_unreviewed")) for r in selected),
+            "workflow_completed": sum(r["run_status"] == "completed" for r in selected),
             "code_passed": sum(r["acceptance"]["status"] == "PASS" for r in selected),
             "observed_resolution_rate": len(resolved) / len(selected) if selected else None,
             "task_equal_resolution_rate": sum(sum(v) / len(v) for v in by_task.values()) / len(by_task) if by_task else None,
@@ -1104,12 +1112,16 @@ class OptimizationRunner(EvaluationRunner):
         save(directory / "acceptance.json", acceptance)
         started = datetime.fromisoformat(state["submitted_at"])
         finish = datetime.fromisoformat(run["finished_at"]) if run.get("finished_at") else datetime.now(timezone.utc)
+        review_status = run.get("review_status")
+        review_degraded = review_status in {"INVALID_OUTPUT", "INCOMPLETE", "UNKNOWN", "NOT_RUN_BUDGET"}
         record = {**entry, "repetition": entry["repetition"], "split": task["split"], "complexity": task["complexity"],
             "implementation_id": state.get("implementation_id", self.plan["implementation_id"]),
             "run_id": run["id"], "run_status": run["status"], "run_error_code": run.get("error_code"),
+            "review_status": review_status,
             "agent_strategy": run.get("agent_strategy"), "execution_config": run.get("execution_config"),
             "tool_policy": (run.get("workspace") or {}).get("tool_policy"), "acceptance": acceptance,
-            "resolved": run["status"] == "completed" and acceptance["status"] == "PASS",
+            "delivered_unreviewed": run["status"] == "completed" and review_degraded and acceptance["status"] == "PASS",
+            "resolved": run["status"] == "completed" and not review_degraded and acceptance["status"] == "PASS",
             "latency_seconds": max(0, (finish - started).total_seconds()), "active_seconds": budget.get("active_seconds"),
             "model_calls": calls, "tool_calls": budget.get("tool_calls"), "usage": run.get("usage"),
             "summary_count": sum(a["kind"] == "context_summary" for a in evidence["artifacts"]),

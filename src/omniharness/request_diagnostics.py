@@ -62,6 +62,11 @@ _ERROR_TYPES = (
     (TimeoutError, "TimeoutError"), (ConnectionError, "ConnectionError"), (OSError, "OSError"),
 )
 _LOCAL_TYPES = {"AgentBoundaryError", "AgentExternalCallFailed", "ProviderError"}
+_OUTPUT_ERROR_CODES = {
+    "OUTPUT_INCOMPLETE", "OUTPUT_TRUNCATED", "OUTPUT_FILTERED",
+    "UNEXPECTED_TOOL_CALL", "REASONING_ONLY", "EMPTY_RESPONSE",
+}
+_INCOMPLETE_REASONS = {"missing_finish", "invalid_finish", "conflicting_finish"}
 _TYPE_NAMES = {name for _, name in _ERROR_TYPES} | _LOCAL_TYPES | {"SQLAlchemyError", "other"}
 _OS_TYPE_NAMES = {"socket.gaierror", "socket.herror", "ssl.SSLCertVerificationError", "ssl.SSLError",
                   "ConnectionResetError", "ConnectionAbortedError", "ConnectionRefusedError", "BrokenPipeError",
@@ -316,16 +321,16 @@ def _failure_diagnostic(exc, transport_mode) -> dict:
     from sqlalchemy.exc import SQLAlchemyError
 
     from .m3_agents import AgentBoundaryError
-    from .providers import _safe_error
+    from .providers import ProviderError, _safe_error
     chain = exception_chain(exc)
     selected = next((item for item, _ in chain if isinstance(item, (
         asyncio.CancelledError, TimeoutError, httpx.HTTPError, httpx2.HTTPError, openai.APIError, ConnectionError,
-        SQLAlchemyError))), exc)
+        SQLAlchemyError, ProviderError))), exc)
     # A sanitized host wrapper may hide the actual SDK failure in __context__.
     code = _safe_error(selected).code
     allowed = {"DEPENDENCY_MISSING", "PROVIDER_TIMEOUT", "PROVIDER_AUTH", "PROVIDER_RATE_LIMIT",
                "PROVIDER_NOT_FOUND", "PROVIDER_REQUEST_REJECTED", "PROVIDER_UNAVAILABLE",
-               "PROVIDER_CONNECTION", "PROVIDER_ERROR"}
+               "PROVIDER_CONNECTION", "PROVIDER_ERROR"} | _OUTPUT_ERROR_CODES
     if code not in allowed:
         code = "PROVIDER_ERROR"
     status = getattr(selected, "status_code", None)
@@ -342,6 +347,8 @@ def _failure_diagnostic(exc, transport_mode) -> dict:
         category = "connection"
     elif isinstance(selected, SQLAlchemyError):
         category = "database"
+    elif isinstance(selected, ProviderError) and code in _OUTPUT_ERROR_CODES:
+        category = "output_integrity"
     elif isinstance(selected, AgentBoundaryError):
         category = "boundary"
     else:
@@ -355,10 +362,14 @@ def _failure_diagnostic(exc, transport_mode) -> dict:
                                            if type(getattr(item, "omni_response_started", None)) is bool), None)
     else:
         trace["exception_chain"] = [_chain_item(item, relation) for item, relation in chain]
-    return {"error_code": code, "http_status": status, "exception_category": category,
-            "transport_mode": transport_mode if isinstance(transport_mode, str)
-                and transport_mode in _MODES else "unknown",
-            "transport_diagnostic": trace}
+    result = {"error_code": code, "http_status": status, "exception_category": category,
+              "transport_mode": transport_mode if isinstance(transport_mode, str)
+                  and transport_mode in _MODES else "unknown",
+              "transport_diagnostic": trace}
+    incomplete_reason = getattr(selected, "omni_incomplete_reason", None) if code == "OUTPUT_INCOMPLETE" else None
+    if isinstance(incomplete_reason, str) and incomplete_reason in _INCOMPLETE_REASONS:
+        result["incomplete_reason"] = incomplete_reason
+    return result
 
 
 def failure_diagnostic(exc, transport_mode) -> dict:
