@@ -21,6 +21,7 @@ from .context_policy import (
     ContextPolicyV2,
     ContextPolicyV3,
     context_budget,
+    context_policy_dict,
     counter_for_policy,
     parse_context_configuration,
 )
@@ -250,7 +251,7 @@ class DurableSummaryExecutor:
         if (request.output_tokens != policy.summary_output_tokens
                 or request.attempt != 0 or request.recovery_of is not None
                 or request.policy_version != policy.version
-                or request.policy_fingerprint != model_fingerprint(asdict(policy))):
+                or request.policy_fingerprint != model_fingerprint(context_policy_dict(policy))):
             raise AgentBoundaryError("Summary request policy differs from its frozen configuration")
         first = await self._execute_attempt(request, policy)
         if first.output_status == "complete":
@@ -531,6 +532,19 @@ async def prepare_agent_context(host, role: str, messages, *, model, system_mess
 _MAX_EVENT_IDS = 50
 
 
+def record_context_rejection(worker, run_id: str, error) -> None:
+    """Save only validated admission counts under the worker ownership fence."""
+    from .context_admission import safe_admission_diagnostic
+
+    diagnostic = safe_admission_diagnostic(getattr(error, "diagnostic", None))
+    if diagnostic is None:
+        return
+    with worker.transaction() as db:
+        run = db.scalar(select(Run).where(Run.id == run_id).with_for_update())
+        if run is not None:
+            add_event(db, run, "context.admission_rejected", diagnostic)
+
+
 async def record_context_decisions(host, role: str, prepared) -> None:
     """Persist bounded, ID-only evidence of v3 masking and degradation.
 
@@ -553,6 +567,7 @@ async def record_context_decisions(host, role: str, prepared) -> None:
                     "role": role, "masked_count": len(masked), "message_ids": masked[-_MAX_EVENT_IDS:],
                     "estimated_tokens_saved": prepared.masked_tokens_saved,
                     "counting_method": prepared.counting_method, "original_records_unchanged": True,
+                    "pressure_masked": "tool_results_pressure_masked" in prepared.decisions,
                 })
             for code in degraded:
                 add_event(db, run, "context.summary_degraded", {

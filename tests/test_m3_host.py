@@ -109,10 +109,17 @@ async def test_unknown_diagnostics_are_bounded_and_never_allow_replay(environmen
     with factory() as db:
         operation = db.scalar(select(OperationRecord).where(OperationRecord.run_id == run_id))
         assert (operation.status, operation.error_code, operation.attempts) == ("uncertain", "RESULT_UNKNOWN", 1)
-        assert operation.result == {**before, "diagnostic": expected}
+        diagnostic = operation.result["diagnostic"]
+        assert {key: diagnostic[key] for key in expected} == expected
+        assert set(diagnostic) == set(expected) | {"transport_diagnostic"}
+        from omniharness.request_diagnostics import safe_transport_diagnostic
+        trace = diagnostic["transport_diagnostic"]
+        assert safe_transport_diagnostic(trace) == trace
+        assert trace["exception_chain"] and trace["milestones_ms"] == {}
+        assert operation.result == {**before, "diagnostic": diagnostic}
         event = db.scalar(select(RunEvent).where(RunEvent.run_id == run_id,
                                               RunEvent.event_type == "agent.model_uncertain"))
-        assert event.payload["diagnostic"] == expected
+        assert event.payload["diagnostic"] == diagnostic
         assert "private-error-canary" not in json.dumps([operation.result, event.payload])
         assert db.get(RunBudget, run_id).model_calls == 1
 

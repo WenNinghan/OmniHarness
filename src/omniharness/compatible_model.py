@@ -6,16 +6,34 @@ No global monkey patch or alternate execution engine is used.
 """
 from __future__ import annotations
 
+import asyncio
 import hashlib
+from contextlib import suppress
 from copy import deepcopy
 
 from langchain_core.messages import AIMessage, AIMessageChunk
 from langchain_core.outputs import ChatGenerationChunk
 from langchain_openai import ChatOpenAI
+from pydantic import Field
+
+from .request_diagnostics import (
+    DIAGNOSTIC_KEY,
+    RequestTrace,
+    active_trace,
+    attach_error,
+    current_trace,
+    install_httpx_hooks,
+)
 
 _NATIVE_REASONING = ("reasoning_content", "reasoning", "reasoning_text", "reasoning_details")
 _USAGE_VALIDITY = "_omni_usage_validity"
-_TERMINAL_REASONS = {"stop", "tool_calls", "function_call", "length", "content_filter"}
+_TERMINAL_REASONS = {
+    "stop", "end_turn", "stop_sequence", "completed",
+    "tool_calls", "function_call", "tool_use", "tool-calls",
+    "length", "max_tokens", "max_output_tokens", "max-tokens",
+    "content_filter", "safety", "recitation", "blocklist", "prohibited_content", "refusal",
+}
+_INCOMPLETE_REASONS = {"missing_finish", "invalid_finish", "conflicting_finish"}
 
 
 def _valid_cumulative_usage(usage) -> bool:
@@ -55,8 +73,11 @@ class _CumulativeStream:
         message_finish = chunk.message.response_metadata.pop("finish_reason", None)
         finish = info.pop("finish_reason", None) or message_finish
         if finish is not None:
-            if finish not in _TERMINAL_REASONS or (self.finish is not None and finish != self.finish):
-                self._incomplete()
+            normalized = finish.lower() if isinstance(finish, str) else None
+            if normalized not in _TERMINAL_REASONS:
+                self._incomplete("invalid_finish")
+            if self.finish is not None and normalized != self.finish.lower():
+                self._incomplete("conflicting_finish")
             self.finish = finish
         if valid is False:
             self.invalid_usage = True
@@ -75,14 +96,17 @@ class _CumulativeStream:
         return chunk
 
     @staticmethod
-    def _incomplete():
+    def _incomplete(reason: str = "missing_finish"):
         from .providers import ProviderError
 
-        raise ProviderError("OUTPUT_INCOMPLETE", "模型流缺少有效结束标记，结果仍未知。")
+        error = ProviderError("OUTPUT_INCOMPLETE", "模型流缺少有效结束标记，结果仍未知。")
+        if reason in _INCOMPLETE_REASONS:
+            error.omni_incomplete_reason = reason
+        raise error
 
     def final(self):
         if self.finish is None:
-            self._incomplete()
+            self._incomplete("missing_finish")
         usage = self.usage if self.terminal_usage and not self.invalid_usage else None
         # A single final increment avoids double counting cumulative frames,
         # and allows a later malformed/decreasing frame to invalidate usage.
@@ -94,7 +118,150 @@ class _CumulativeStream:
         )
 
 
-class CompatibleChatModel(ChatOpenAI):
+def _request_error(error, *, started, phase=None):
+    # The host recovery classifier sees only bounded metadata, never response
+    # fragments or exception text. Any received chunk conservatively forbids a
+    # response-started request from being treated as an unaccepted retry.
+    with suppress(Exception):
+        error.omni_response_started = bool(started or getattr(error, "omni_response_started", False))
+        if phase is not None:
+            error.omni_timeout_phase = phase
+
+
+def _model_progress(chunk):
+    message = chunk.message
+    return bool(message.content or message.tool_calls or getattr(message, "tool_call_chunks", None)
+                or any(message.additional_kwargs.get(key) for key in _NATIVE_REASONING))
+
+
+class RequestTimedChatOpenAI(ChatOpenAI):
+    """Opt-in request clocks, local to each call even on a shared model."""
+
+    omni_request_timeouts: dict[str, float] | None = Field(default=None, exclude=True)
+
+    def _trace_mode(self):
+        return ("compatible-native-stream-v1" if getattr(self, "omni_normalize_stream_usage", False)
+                and self.streaming else "ainvoke_default")
+
+    async def ainvoke(self, *args, **kwargs):
+        # The SDK-owned HTTPX client retains its lifecycle. A new trace belongs
+        # to this invocation even when the model/client is shared concurrently.
+        install_httpx_hooks(self)
+        trace = RequestTrace(transport_mode=self._trace_mode())
+        with active_trace(trace):
+            try:
+                message = await super().ainvoke(*args, **kwargs)
+                with suppress(Exception):
+                    if "first_chunk" not in trace.milestones:
+                        trace.model_response(semantic=bool(message.content or message.tool_calls
+                            or any(message.additional_kwargs.get(key) for key in _NATIVE_REASONING)))
+                    diagnostic = trace.diagnostic()
+                    if diagnostic is not None:
+                        message.response_metadata[DIAGNOSTIC_KEY] = diagnostic
+                return message
+            except BaseException as error:
+                attach_error(error, trace)
+                raise
+
+    async def astream(self, *args, **kwargs):
+        install_httpx_hooks(self)
+        trace = RequestTrace(transport_mode=self._trace_mode())
+        stream = super().astream(*args, **kwargs)
+        last = None
+        try:
+            while True:
+                # Reset ContextVar before handing a chunk to caller code, so
+                # unrelated caller work cannot be attributed to this request.
+                with active_trace(trace):
+                    try:
+                        chunk = await anext(stream)
+                    except StopAsyncIteration:
+                        break
+                last = chunk
+                yield chunk
+            diagnostic = None
+            with suppress(Exception):
+                diagnostic = trace.diagnostic()
+            if diagnostic is not None:
+                # Exactly one metadata-only chunk: LangChain must not sum
+                # timings or concatenate hashes from repeated trace snapshots.
+                yield AIMessageChunk(content="", id=last.id if last else None, chunk_position="last",
+                                     response_metadata={DIAGNOSTIC_KEY: diagnostic})
+        except BaseException as error:
+            attach_error(error, trace)
+            raise
+        finally:
+            with active_trace(trace), suppress(Exception):
+                await stream.aclose()
+
+    async def _agenerate(self, *args, **kwargs):
+        limits = self.omni_request_timeouts
+        if limits is None:
+            return await super()._agenerate(*args, **kwargs)
+        deadline = None
+        try:
+            async with asyncio.timeout(limits["total_seconds"]) as deadline:
+                return await super()._agenerate(*args, **kwargs)
+        except BaseException as error:
+            _request_error(error, started=getattr(error, "omni_response_started", False),
+                           phase="total" if deadline is not None and deadline.expired() else None)
+            raise
+
+    async def _astream(self, *args, **kwargs):
+        limits = self.omni_request_timeouts
+        if limits is None:
+            async for chunk in super()._astream(*args, **kwargs):
+                trace = current_trace()
+                if trace is not None:
+                    with suppress(Exception):
+                        trace.chunk(semantic=_model_progress(chunk))
+                yield chunk
+            return
+        stream = super()._astream(*args, **kwargs)
+        loop = asyncio.get_running_loop()
+        first_at = last_progress = loop.time()
+        total_at = first_at + limits["total_seconds"]
+        progressed = observed = False
+        try:
+            while True:
+                phase = "stream_idle" if progressed else "first_chunk"
+                maximum = limits["idle_seconds"] if progressed else limits["first_chunk_seconds"]
+                progress_at = (last_progress if progressed else first_at) + maximum
+                if total_at <= progress_at:
+                    phase, next_at = "total", total_at
+                else:
+                    next_at = progress_at
+                try:
+                    remaining = next_at - loop.time()
+                    if remaining <= 0:
+                        raise TimeoutError
+                    # Do not leave a task-cancelling timeout context open while
+                    # yielding to the consumer. Deadlines still advance while
+                    # it processes a chunk, and are checked on its next pull.
+                    async with asyncio.timeout(remaining):
+                        chunk = await anext(stream)
+                except StopAsyncIteration:
+                    break
+                except TimeoutError as error:
+                    _request_error(error, started=observed, phase=phase)
+                    raise
+                observed = True
+                trace = current_trace()
+                if trace is not None:
+                    with suppress(Exception):
+                        trace.chunk(semantic=_model_progress(chunk))
+                if _model_progress(chunk):
+                    progressed, last_progress = True, loop.time()
+                yield chunk
+        except BaseException as error:
+            _request_error(error, started=observed)
+            raise
+        finally:
+            with suppress(Exception):
+                await stream.aclose()
+
+
+class CompatibleChatModel(RequestTimedChatOpenAI):
     # Opt in only for a verified, frozen transport. Existing chat streams keep
     # their cumulative-usage contract and their external max-based accounting.
     omni_normalize_stream_usage: bool = False

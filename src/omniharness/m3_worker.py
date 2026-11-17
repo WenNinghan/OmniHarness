@@ -286,16 +286,13 @@ def _root_diagnostic(exc):
     Only the fixed categories of _failure_diagnostic are kept; never text.
     """
     from .m3_host import _failure_diagnostic
-    root, seen = exc, 0
-    while root.__context__ is not None and seen < 8:
-        root, seen = root.__context__, seen + 1
     try:
-        diagnostic = _failure_diagnostic(root, "unknown")
+        diagnostic = _failure_diagnostic(exc, "unknown")
     except Exception:
         return None
-    diagnostic["exception_type"] = type(root).__name__[:80] if type(root).__module__.startswith((
-        "omniharness", "httpx", "httpcore", "openai", "asyncio", "builtins", "sqlalchemy", "langgraph")) else "other"
-    diagnostic["chain_depth"] = seen
+    chain = (diagnostic.get("transport_diagnostic") or {}).get("exception_chain", [])
+    diagnostic["exception_type"] = chain[-1]["type"].rsplit(".", 1)[-1] if chain else "other"
+    diagnostic["chain_depth"] = max(0, len(chain) - 1)
     return diagnostic
 
 
@@ -345,7 +342,8 @@ def _review(worker, identity, code, message, *, preserve_requirements=False, sta
             reject_pending_commands(db, run)
         add_event(db, run, "run.pending_review", {"code": code, "message": message,
                                                   "message_id": assistant.id if assistant else None,
-                                                  "output_metadata": assistant.output_metadata if assistant else {}})
+                                                  "output_metadata": assistant.output_metadata if assistant else {},
+                                                  **({"diagnostic": diagnostic} if diagnostic is not None else {})})
 
 
 def _budget_exceeded(worker, identity, *, started):
@@ -390,7 +388,7 @@ def _context_exceeded(worker, identity, *, started):
         _finish(worker, identity, "failed", "CONTEXT_LIMIT", "模型上下文已达到本地上限，请缩短输入或创建新对话。", started=started)
 
 
-def _complete(worker, identity, answer, *, started, source_message=None):
+def _complete(worker, identity, answer, *, started, source_message=None, review_status=None):
     """Atomically publish one final answer and its terminal event."""
     with worker.transaction() as db:
         run = db.scalar(select(Run).where(Run.id == identity).with_for_update())
@@ -427,6 +425,10 @@ def _complete(worker, identity, answer, *, started, source_message=None):
                 assistant.reasoning_content = output.reasoning
                 add_event(db, run, "message.reasoning_delta", {"message_id": assistant.id, "delta": output.reasoning})
             assistant.output_metadata = {"output_status": "complete", "finish_reason": output.finish_reason}
+        if review_status in {"COMPLETED", "INVALID_OUTPUT", "INCOMPLETE", "UNKNOWN", "NOT_RUN_BUDGET"}:
+            run.outcome = {**(run.outcome or {}), "review_status": review_status}
+            if review_status != "COMPLETED":
+                assistant.output_metadata = {**(assistant.output_metadata or {}), "review_status": review_status}
         if run.workspace_id and answer:
             from .command_exit_audit import audit_command_exit_codes
             from .command_exit_evidence import collect_command_exit_evidence
@@ -589,7 +591,8 @@ def _complete_checkpoint(worker, identity, values, *, started):
                                       {"finish_reason": output.finish_reason,
                                        "output_status": issue.status if issue else "incomplete"})
         raise
-    _complete(worker, identity, answer, started=started, source_message=source)
+    review_status = values.get("review_status") if isinstance(values, dict) else None
+    _complete(worker, identity, answer, started=started, source_message=source, review_status=review_status)
 
 
 async def _verified_child_interrupt(agent, saver, config, identity):
@@ -804,7 +807,8 @@ async def run_agent(worker, identity, *, model_factory=None):
                                              max_context_messages=worker.settings.max_chat_messages,
                                              max_context_characters=worker.settings.max_chat_characters,
                                              workflow_version=version, execution_agent=execution_agent,
-                                             execution_strategy=snapshot["agent"].get("strategy", "staged"))
+                                             execution_strategy=snapshot["agent"].get("strategy", "staged"),
+                                             review_failure_policy=snapshot["agent"].get("review_failure_policy", "fail"))
                 return build_controlled_agent(coordinator=roles["think"],
                                               subagents=[roles["plan"], roles["execute"], roles["review"]],
                                               hooks=host, checkpointer=saver, require_durable_ids=True,
@@ -1092,6 +1096,8 @@ async def run_agent(worker, identity, *, model_factory=None):
     except AgentContextLimitExceeded:
         _context_exceeded(worker, identity, started=started)
     except ContextPolicyError as exc:
+        from .context_host import record_context_rejection
+        record_context_rejection(worker, identity, exc)
         with worker.transaction() as db:
             unknown = db.scalar(select(OperationRecord.operation_id).where(
                 OperationRecord.run_id == identity, OperationRecord.status.in_(["running", "uncertain"])).limit(1))

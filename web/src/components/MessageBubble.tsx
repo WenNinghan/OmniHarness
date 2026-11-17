@@ -3,6 +3,7 @@ import { Check, ChevronRight, CircleAlert, Copy, LoaderCircle, Sparkles } from '
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import { commandResultAuditCopyText, commandResultAuditWarning } from '../lib/command-result-audit.ts'
+import { reviewStatusCopyText, reviewStatusWarning } from '../lib/review-status.ts'
 import type { Message } from '../lib/types.ts'
 import { stageLabels } from '../lib/types.ts'
 import { Button } from './ui.tsx'
@@ -13,7 +14,10 @@ export function MessageBubble({ message, streaming, notify, onModelSettings }: {
   async function copy(kind: 'answer' | 'reasoning') {
     try {
       await navigator.clipboard.writeText(kind === 'answer'
-        ? commandResultAuditCopyText(message.content, message.output_metadata?.command_result_audit)
+        ? commandResultAuditCopyText(
+            reviewStatusCopyText(message.content, message.output_metadata?.review_status),
+            message.output_metadata?.command_result_audit,
+          )
         : message.reasoning_content ?? '')
       setCopied(kind); window.setTimeout(() => setCopied(null), 1500)
     } catch { notify('复制失败，请手动选择文本复制。', true) }
@@ -23,6 +27,7 @@ export function MessageBubble({ message, streaming, notify, onModelSettings }: {
   const output = message.output_metadata?.output_status
   const stage = message.output_metadata?.stage
   const commandAudit = commandResultAuditWarning(message.output_metadata?.command_result_audit)
+  const reviewWarning = reviewStatusWarning(message.output_metadata?.review_status)
   const stageLabel = stage && stage in stageLabels ? stageLabels[stage as keyof typeof stageLabels] : null
   const incomplete = ['failed', 'interrupted', 'cancelled'].includes(message.status) ||
     ['truncated', 'reasoning_only', 'empty', 'filtered', 'interrupted'].includes(output ?? '')
@@ -41,6 +46,7 @@ export function MessageBubble({ message, streaming, notify, onModelSettings }: {
       </details>}
       {commandAudit?.kind === 'conflict' && <div className="message-output-notice" role="alert"><CircleAlert size={16} /><div><strong>命令退出码存在冲突</strong><p>检测到回答中的命令退出码与实际工具记录不一致，请在运行详情核对命令和日志。</p>{commandAudit.conflicts.map((item, index) => <p key={`${item.artifactId}-${index}`}>工件 <code>{item.artifactId}</code>：回答写退出码 {item.claimedExitCode}，工具记录为 {item.actualExitCode}。</p>)}{commandAudit.truncated && <p>核对范围或展示数量有限，请查看完整工具记录。</p>}</div></div>}
       {commandAudit?.kind === 'incomplete' && <div className="message-output-notice" role="status"><CircleAlert size={16} /><div><strong>命令退出码核对未完成</strong><p>部分内容或证据超出本次核对范围，请查看工具记录。</p></div></div>}
+      {reviewWarning && <div className="message-output-notice" role="status"><CircleAlert size={16} /><div><strong>{reviewWarning.label}</strong><p>{reviewWarning.message}</p></div></div>}
       {message.content && <div className="markdown answer-content"><ReactMarkdown remarkPlugins={[remarkGfm]}>{message.content}</ReactMarkdown>{streaming && <span className="typing-cursor" />}</div>}
       {streaming && !message.content && !reasoning && <div className="response-waiting"><LoaderCircle size={14} className="spin" />等待模型响应…</div>}
       {message.status === 'paused' && <div className="response-paused">已暂停，收到的内容已保存。</div>}

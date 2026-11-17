@@ -13,11 +13,12 @@ import json
 import math
 from collections.abc import AsyncIterator
 from copy import deepcopy
-from dataclasses import dataclass, field, replace
+from dataclasses import asdict, dataclass, field, replace
 from datetime import datetime, timezone
 from typing import Any, Literal
 from urllib.parse import urlsplit
 
+import httpx
 from pydantic import BaseModel
 
 from .model_output import (
@@ -27,6 +28,7 @@ from .model_output import (
     output_issue,
     require_complete_output,
 )
+from .request_policy import RequestPolicyError, parse_request_policy, provider_parameters
 
 
 @dataclass
@@ -134,9 +136,15 @@ def validate_model_parameters(adapter_type: str, parameters: dict) -> dict[str, 
     """
     if adapter_type not in _ALLOWED:
         raise ProviderError("INVALID_ADAPTER", "不支持的模型适配器。")
-    if not isinstance(parameters, dict) or set(parameters) - _ALLOWED[adapter_type]:
+    try:
+        policy = parse_request_policy(parameters)
+    except RequestPolicyError:
+        raise ProviderError("INVALID_PARAMETERS", "本地请求策略格式或范围无效。") from None
+    if policy is not None and adapter_type not in {"openai", "openai-compatible"}:
+        raise ProviderError("INVALID_PARAMETERS", "此适配器尚不支持本地请求策略。")
+    params = provider_parameters(parameters)
+    if set(params) - _ALLOWED[adapter_type]:
         raise ProviderError("INVALID_PARAMETERS", "存在不支持的模型参数，请检查适配器参数白名单。")
-    params = dict(parameters)
     for key, value in params.items():
         if key in ("temperature", "top_p"):
             ceiling = 1 if key == "top_p" or adapter_type == "anthropic" else 2
@@ -187,27 +195,42 @@ def build_chat_model(config: RuntimeModelConfig, *, http_async_client=None, nati
         raise ProviderError("MOCK_NOT_LIVE", "模拟模式不创建真实模型客户端。")
     try:
         if config.adapter_type in ("openai", "openai-compatible"):
+            policy = parse_request_policy(config.parameters)
+            local = {}
+            timeout = config.timeout_seconds
+            if policy is not None:
+                limits = policy.timeouts
+                timeout = httpx.Timeout(connect=limits.connect_seconds, read=limits.read_seconds,
+                                        write=limits.write_seconds, pool=limits.pool_seconds)
+                local = {"omni_request_timeouts": asdict(limits), "stream_chunk_timeout": None}
             thinking = params.pop("thinking", None)
             if thinking is not None:
                 params["extra_body"] = {"thinking": deepcopy(thinking)}
             if native_streaming:
                 params.update(streaming=True, omni_normalize_stream_usage=True,
-                              stream_chunk_timeout=config.timeout_seconds)
+                              stream_chunk_timeout=None if policy else config.timeout_seconds)
+                local.pop("stream_chunk_timeout", None)
             cls = (importlib.import_module("omniharness.compatible_model").CompatibleChatModel
                    if config.adapter_type == "openai-compatible"
+                   else importlib.import_module("omniharness.compatible_model").RequestTimedChatOpenAI
+                   if policy is not None
                    else importlib.import_module("langchain_openai").ChatOpenAI)
-            return cls(
+            model = cls(
                 model=config.model_name,
                 api_key=config.api_key or "omniharness-no-key-configured",
                 base_url=config.base_url or "https://api.openai.com/v1",
-                timeout=config.timeout_seconds,
+                timeout=timeout,
                 max_tokens=config.max_output_tokens,
                 max_retries=0,
                 use_responses_api=config.adapter_type == "openai",
                 stream_usage=True,
                 http_async_client=http_async_client,
+                **local,
                 **params,
             )
+            from .request_diagnostics import install_httpx_hooks
+            install_httpx_hooks(model)
+            return model
         if config.adapter_type == "anthropic":
             cls = importlib.import_module("langchain_anthropic").ChatAnthropic
             return cls(
@@ -236,6 +259,12 @@ def build_chat_model(config: RuntimeModelConfig, *, http_async_client=None, nati
 
 def _text(content: Any) -> str:
     return answer_text(content)
+
+
+def request_total_seconds(config: RuntimeModelConfig) -> float:
+    """Use the explicit host deadline, preserving historical absent-policy calls."""
+    policy = parse_request_policy(config.parameters)
+    return policy.timeouts.total_seconds if policy is not None else config.timeout_seconds
 
 
 def _messages(messages: list[dict]) -> list[tuple[str, str]]:
@@ -278,7 +307,7 @@ async def stream_chat(config: RuntimeModelConfig, messages: list[dict]) -> Async
         saw_text = saw_reasoning = refusal = has_tools = False
         require_finish = isinstance(model, BaseChatModel)
         with tracing_context(enabled=False):
-            async with asyncio.timeout(config.timeout_seconds):
+            async with asyncio.timeout(request_total_seconds(config)):
                 async for chunk in model.astream(formatted):
                     output = extract_output(chunk, deduplicate_echo=False)
                     reasoning = output.reasoning
@@ -415,7 +444,7 @@ async def probe_model(config: RuntimeModelConfig, probes: list[str]) -> dict:
             model = build_chat_model(config, native_streaming=True) if native_streaming else build_chat_model(config)
             tracing_context = importlib.import_module("langsmith").tracing_context
             with tracing_context(enabled=False):
-                async with asyncio.timeout(config.timeout_seconds):
+                async with asyncio.timeout(request_total_seconds(config)):
                     supported, message = await _run_probe(model, config.adapter_type, probe)
             results[probe] = {
                 "status": "supported" if supported else "unsupported",
@@ -436,7 +465,9 @@ def summary_capability_binding(config: RuntimeModelConfig | dict) -> str:
     def get(name, default=None):
         return config.get(name, default) if isinstance(config, dict) else getattr(config, name, default)
     identity = {name: get(name) for name in ("id", "adapter_type", "model_name")}
-    identity.update(base_url=str(get("base_url") or "").rstrip("/"), parameters=get("parameters", {}))
+    parameters = get("parameters", {})
+    identity.update(base_url=str(get("base_url") or "").rstrip("/"),
+                    parameters=provider_parameters(parameters) if isinstance(parameters, dict) else parameters)
     return hashlib.sha256(json.dumps(identity, sort_keys=True, ensure_ascii=False,
                                     allow_nan=False).encode()).hexdigest()
 
@@ -489,7 +520,7 @@ async def _probe_summary_non_thinking(config: RuntimeModelConfig) -> dict:
         model = build_chat_model(probe)
         result["model_calls"] = 1
         with importlib.import_module("langsmith").tracing_context(enabled=False):
-            async with asyncio.timeout(probe.timeout_seconds):
+            async with asyncio.timeout(request_total_seconds(probe)):
                 message = await model.ainvoke([("user", "Summarize in one sentence: the file was read; the test passed. No analysis.")])
         result["parameter_accepted"] = True
         output = extract_output(message)

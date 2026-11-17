@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import time
 from collections.abc import Awaitable, Callable
 from copy import deepcopy
 from uuid import NAMESPACE_URL, uuid5
@@ -28,6 +29,7 @@ from .models import (
     OperationRecord,
     Provider,
     Run,
+    RunBudget,
     RunBudgetReservation,
     RunCommand,
     ToolOperation,
@@ -60,42 +62,17 @@ DelegationVerifier = Callable[[InvocationIdentity], Awaitable[bool]]
 
 
 def _failure_diagnostic(exc: BaseException, transport_mode: str) -> dict:
-    """Keep only bounded classifications; exception text is never evidence."""
-    import httpx
-    import openai
-    from sqlalchemy.exc import SQLAlchemyError
-
-    from .providers import _safe_error
-
-    allowed_codes = {
-        "DEPENDENCY_MISSING", "PROVIDER_TIMEOUT", "PROVIDER_AUTH", "PROVIDER_RATE_LIMIT",
-        "PROVIDER_NOT_FOUND", "PROVIDER_REQUEST_REJECTED", "PROVIDER_UNAVAILABLE",
-        "PROVIDER_CONNECTION", "PROVIDER_ERROR",
-    }
-    code = _safe_error(exc).code
-    if not isinstance(code, str) or code not in allowed_codes:
-        code = "PROVIDER_ERROR"
-    status = getattr(exc, "status_code", None)
-    if type(status) is not int:
-        status = getattr(getattr(exc, "response", None), "status_code", None)
-    status = status if type(status) is int and 100 <= status <= 599 else None
-    if isinstance(exc, asyncio.CancelledError):
-        category = "cancelled"
-    elif isinstance(exc, (TimeoutError, httpx.TimeoutException, openai.APITimeoutError)):
-        category = "timeout"
-    elif isinstance(exc, (httpx.HTTPStatusError, openai.APIStatusError)):
-        category = "http_status"
-    elif isinstance(exc, (ConnectionError, httpx.NetworkError, openai.APIConnectionError)):
-        category = "connection"
-    elif isinstance(exc, SQLAlchemyError):
-        category = "database"
-    elif isinstance(exc, AgentBoundaryError):
-        category = "boundary"
-    else:
-        category = "unknown"
-    return {"error_code": code, "http_status": status, "exception_category": category,
-            "transport_mode": transport_mode if transport_mode in {
-                "ainvoke_default", "compatible-native-stream-v1"} else "unknown"}
+    """Retain the legacy entry point while sharing bounded transport evidence."""
+    try:
+        from .request_diagnostics import failure_diagnostic
+        return failure_diagnostic(exc, transport_mode)
+    except Exception:
+        # Observation must not replace the original failure or prevent its
+        # durable UNKNOWN/known-rejection transition. Never stringify it.
+        return {"error_code": "PROVIDER_ERROR", "http_status": None, "exception_category": "unknown",
+                "transport_mode": transport_mode if isinstance(transport_mode, str) and transport_mode in {
+                    "ainvoke_default", "compatible-native-stream-v1"} else "unknown",
+                "diagnostic_status": "unavailable"}
 
 
 class FencedAgentHost:
@@ -358,9 +335,137 @@ class FencedAgentHost:
                         raise AgentOperationNeedsReview("Saved execution model scope cannot be authenticated")
                 return deepcopy(row.result["response"])
 
+    async def provider_remaining_seconds(self, role: str) -> float:
+        """The Run's existing active segment also charges recovery backoff."""
+        async with self.serial:
+            with self.worker.transaction() as db:
+                self._run(db, role, allow_supplements=True)
+                budget = db.get(RunBudget, self.run_id)
+                if budget is None:
+                    raise AgentBoundaryError("Run budget is unavailable")
+                elapsed = max(0.0, time.monotonic() - getattr(self, "_active_segment_started", time.monotonic()))
+                return max(0.0, budget.max_active_seconds - budget.active_seconds - elapsed)
+
+    def _provider_operation(self, db, role, identity, role_snapshot):
+        binding = self._binding(identity, role_snapshot, self.plugin_versions, "model_calls", role, None)
+        reserved = db.get(RunBudgetReservation, {"run_id": self.run_id,
+                                               "invocation_id": identity.invocation_id})
+        if reserved is None:
+            return None
+        row = db.get(OperationRecord, operation_id(self.run_id, self._node("model_calls", role),
+                                                  {"invocation_id": identity.invocation_id}))
+        if (reserved.kind != "model_calls" or reserved.binding_fingerprint != binding or row is None
+                or not isinstance(row.result, dict) or row.result.get("binding_fingerprint") != binding):
+            raise AgentOperationNeedsReview("Provider recovery reservation binding differs")
+        return row
+
+    @staticmethod
+    def _provider_metadata(root, identity, max_attempts):
+        return {"version": 1, "root_invocation_id": root.invocation_id,
+                "attempt": 1 if identity.invocation_id == root.invocation_id else 2,
+                "parent_invocation_id": None if identity.invocation_id == root.invocation_id else root.invocation_id,
+                "max_attempts": max_attempts}
+
+    def _validate_provider_metadata(self, row, root, identity, max_attempts):
+        metadata = row.result.get("provider_recovery")
+        expected = self._provider_metadata(root, identity, max_attempts)
+        if not isinstance(metadata, dict) or any(metadata.get(key) != value for key, value in expected.items()):
+            raise AgentOperationNeedsReview("Provider recovery chain binding differs")
+        return metadata
+
+    async def select_provider_attempt(self, role, root, max_attempts):
+        """Resolve a bounded durable chain; never authorize a recorded dispatch."""
+        from .provider_recovery import attempt_identity
+        self._verify_identity(root)
+        if type(max_attempts) is not int or max_attempts not in {1, 2}:
+            raise AgentBoundaryError("Invalid provider recovery limit")
+        selected, wait = root, 0.0
+        async with self.serial:
+            with self.worker.transaction() as db:
+                _, snapshot = self._run(db, role, allow_supplements=True)
+                row = self._provider_operation(db, role, root, snapshot)
+                if row is None:
+                    return root, None, 0.0
+                metadata = self._validate_provider_metadata(row, root, root, max_attempts)
+                if row.status == "failed" and metadata.get("retry_allowed") is True and max_attempts == 2:
+                    selected = attempt_identity(root, 2)
+                    child_id = metadata.get("child_invocation_id")
+                    if child_id not in {None, selected.invocation_id}:
+                        raise AgentOperationNeedsReview("Provider recovery child binding differs")
+                    child = self._provider_operation(db, role, selected, snapshot)
+                    if child is None:
+                        if child_id is not None:
+                            raise AgentOperationNeedsReview("Provider recovery child record is unavailable")
+                        retry_at = metadata.get("not_before")
+                        if type(retry_at) not in {int, float} or not 0 <= retry_at < 1e12:
+                            raise AgentOperationNeedsReview("Provider recovery wait evidence is invalid")
+                        return selected, None, max(0.0, retry_at - time.time())
+                    if child_id != selected.invocation_id:
+                        raise AgentOperationNeedsReview("Provider recovery parent link is unavailable")
+                    self._validate_provider_metadata(child, root, selected, max_attempts)
+                    row = child
+                if row.status != "completed":
+                    raise AgentOperationNeedsReview("Provider attempt has no confirmed replayable result")
+        # Reuse the existing exact response and V10 scope/MAC validation using
+        # the actual child identity. No parent response is forged or copied.
+        saved = await self.replay_invocation("model_calls", role, None, selected)
+        return selected, saved, wait
+
+    async def reserve_provider_attempt(self, role, root, identity, max_attempts, *, on_reserved=None):
+        from .provider_recovery import attempt_identity
+        self._verify_identity(root)
+        if (identity not in (root, attempt_identity(root, 2))
+                or type(max_attempts) is not int or max_attempts not in {1, 2}):
+            raise AgentBoundaryError("Invalid provider attempt identity")
+        child = identity.invocation_id != root.invocation_id
+        if child and max_attempts != 2:
+            raise AgentBoundaryError("Provider recovery is not enabled")
+        if child and self.workflow_version == "stage-agent-v10":
+            raise AgentBoundaryError("Provider recovery is unavailable for V10 closure")
+
+        def prepare(db):
+            if not child:
+                return
+            _, snapshot = self._run(db, role, allow_supplements=True)
+            parent = self._provider_operation(db, role, root, snapshot)
+            if parent is None:
+                raise AgentOperationNeedsReview("Provider recovery parent is unavailable")
+            metadata = self._validate_provider_metadata(parent, root, root, max_attempts)
+            if (parent.status != "failed" or metadata.get("retry_allowed") is not True
+                    or metadata.get("child_invocation_id") is not None
+                    or metadata.get("failure_class") not in {"HTTP_429_REJECTED", "POOL_NOT_DISPATCHED",
+                                                             "CONNECT_NOT_DISPATCHED"}
+                    or type(metadata.get("not_before")) not in {int, float}
+                    or metadata["not_before"] > time.time()):
+                raise AgentOperationNeedsReview("Provider recovery parent does not authorize dispatch")
+            parent.result = {**parent.result, "provider_recovery": {
+                **metadata, "child_invocation_id": identity.invocation_id}}
+
+        def capture(db, operation):
+            operation.result = {**operation.result, "provider_recovery":
+                                self._provider_metadata(root, identity, max_attempts)}
+            if on_reserved is not None:
+                on_reserved(db, operation)
+            if child:
+                add_event(db, db.get(Run, self.run_id), "agent.model_recovery_reserved", {
+                    "role": role, "root_invocation_id": root.invocation_id,
+                    "invocation_id": identity.invocation_id, "attempt": 2})
+
+        return await self.reserve_invocation("model_calls", role, None, identity,
+                                              prepare=prepare, on_reserved=capture)
+
+    async def fail_provider_attempt(self, role, root, identity, *, failure, retry_allowed, delay,
+                                    error, transport_mode, blocked_reason=None):
+        metadata = {"failure_class": failure.code, "retry_allowed": bool(retry_allowed),
+                    "not_before": time.time() + delay if retry_allowed else None}
+        if blocked_reason == "V10_CLOSURE_UNSUPPORTED":
+            metadata["retry_blocked_reason"] = blocked_reason
+        await self._finish("model_calls", role, None, identity, uncertain=False,
+                           known_failure=metadata, diagnostic=_failure_diagnostic(error, transport_mode))
+
     async def _finish(self, kind: str, role: str, tool_name: str | None,
                       identity: InvocationIdentity, *, uncertain: bool, result: dict | None = None,
-                      result_factory=None, diagnostic: dict | None = None):
+                      result_factory=None, diagnostic: dict | None = None, known_failure: dict | None = None):
         self._verify_identity(identity)
         if tool_name == "task":
             raise AgentBoundaryError("Delegation is completed by its child graph")
@@ -390,12 +495,34 @@ class FencedAgentHost:
                     if changed and diagnostic is not None:
                         operation = db.get(OperationRecord, op_id)
                         operation.result = {**(operation.result or {}), "diagnostic": diagnostic}
+                elif known_failure is not None:
+                    operation = db.get(OperationRecord, op_id)
+                    saved = operation.result if operation else None
+                    metadata = saved.get("provider_recovery") if isinstance(saved, dict) else None
+                    if not isinstance(metadata, dict) or kind != "model_calls":
+                        raise AgentOperationNeedsReview("Provider failure reservation is unavailable")
+                    changed = finish_operation(db, op_id, "failed", error_code="PROVIDER_DISPATCH_FAILED",
+                        result={**saved, "diagnostic": diagnostic, "provider_recovery": {**metadata, **known_failure}})
                 else:
                     if result_factory is not None:
                         result = result_factory(db)
+                    if kind == "model_calls":
+                        try:
+                            from .request_diagnostics import safe_transport_diagnostic, success_diagnostic
+                            trace = safe_transport_diagnostic(success_diagnostic(result))
+                            if trace is not None:
+                                diagnostic = {"transport_diagnostic": trace}
+                        except Exception:
+                            diagnostic = {"diagnostic_status": "unavailable"}
                     from .model_usage import model_binding
                     evidence = {"outcome": "completed", "purpose": identity.purpose,
                                 "model_binding": model_binding(roles[role_key].get("model"))}
+                    if diagnostic is not None:
+                        evidence["diagnostic"] = diagnostic
+                    reserved_operation = db.get(OperationRecord, op_id)
+                    saved = reserved_operation.result if reserved_operation else None
+                    if isinstance(saved, dict) and isinstance(saved.get("provider_recovery"), dict):
+                        evidence["provider_recovery"] = deepcopy(saved["provider_recovery"])
                     if (self.workflow_version == "stage-agent-v10" and kind == "model_calls"
                             and role == "execute" and identity.purpose == "task"):
                         reserved_operation = db.get(OperationRecord, op_id)
@@ -439,8 +566,8 @@ class FencedAgentHost:
                     node = db.get(AgentRun, self._agent_run_id(identity.invocation_id))
                     if node is None or node.run_id != self.run_id:
                         raise AgentBoundaryError("Agent invocation record is unavailable")
-                    node.status = "pending_review" if uncertain else "completed"
-                    node.error_code = "RESULT_UNKNOWN" if uncertain else None
+                    node.status = "pending_review" if uncertain else "failed" if known_failure else "completed"
+                    node.error_code = "RESULT_UNKNOWN" if uncertain else "PROVIDER_DISPATCH_FAILED" if known_failure else None
                     node.finished_at = now()
                     usage, raw = None, None
                     if result is not None:
@@ -465,8 +592,10 @@ class FencedAgentHost:
                                      "model_calls": previous.get("model_calls", 0) + 1,
                                      "estimated_cost": None}
                     from .model_usage import normalize_usage
-                    add_event(db, run, "agent.model_uncertain" if uncertain else "agent.model_completed",
-                              {"agent_run_id": node.id, "role": role, "purpose": identity.purpose, "usage": usage,
+                    add_event(db, run, "agent.model_uncertain" if uncertain else
+                              "agent.model_failed" if known_failure else "agent.model_completed",
+                              {"agent_run_id": node.id, "invocation_id": identity.invocation_id,
+                               "role": role, "purpose": identity.purpose, "usage": usage,
                                "usage_details": normalize_usage(raw),
                                **({"diagnostic": diagnostic} if diagnostic is not None else {})})
                 return result

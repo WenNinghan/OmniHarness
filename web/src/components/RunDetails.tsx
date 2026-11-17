@@ -9,8 +9,9 @@ import { Badge, Button } from './ui.tsx'
 import { ToolActivity } from './ToolActivity.tsx'
 import { RunObservation } from './RunObservation.tsx'
 import { strategyLabels } from '../lib/collaboration-state.ts'
+import { reviewStatusWarning } from '../lib/review-status.ts'
 
-const eventLabels: Record<string, string> = { 'run.created': '任务已创建', 'run.started': '开始运行', 'message.delta': '接收流式内容', 'run.completed': '生成完成', 'run.cancelled': '运行已停止', 'run.failed': '运行失败', 'run.interrupted': '运行中断', 'run.paused': '运行已暂停', 'run.pending_review': '等待核对', 'run.command': '控制命令已处理', 'agent.delegated': '已委派', 'agent.model_started': '模型调用开始', 'agent.model_completed': '模型调用完成', 'agent.model_uncertain': '模型调用待核对', 'agent.stage_result': '阶段产物已保存' }
+const eventLabels: Record<string, string> = { 'run.created': '任务已创建', 'run.started': '开始运行', 'message.delta': '接收流式内容', 'run.completed': '生成完成', 'run.cancelled': '运行已停止', 'run.failed': '运行失败', 'run.interrupted': '运行中断', 'run.paused': '运行已暂停', 'run.pending_review': '等待核对', 'run.command': '控制命令已处理', 'agent.delegated': '已委派', 'agent.model_started': '模型调用开始', 'agent.model_completed': '模型调用完成', 'agent.model_uncertain': '模型调用待核对', 'agent.review_degraded': '独立审查未完成（降级交付）', 'agent.stage_result': '阶段产物已保存' }
 const time = (value: string) => new Date(value).toLocaleTimeString('zh-CN', { hour12: false })
 const nodeLabels: Record<string, string> = { running: '运行中', completed: '已完成', pending_review: '待核对', failed: '失败', cancelled: '已停止' }
 const evidenceReasons: Record<string, string> = {
@@ -184,6 +185,10 @@ function StageResultContent({ stage, content }: { stage: string; content: string
       const report: unknown = JSON.parse(content)
       if (report && typeof report === 'object' && !Array.isArray(report)) {
         const data = report as Record<string, unknown>
+        if (data.status === 'UNAVAILABLE' && typeof data.reason === 'string') {
+          const warning = reviewStatusWarning(data.reason)
+          return <div className="review-result"><p><strong>{warning?.label ?? `审查未完成（${data.reason}）`}</strong></p><p>{warning?.message ?? '本次运行未生成有效的模型审查结论；结论支持状态保持未验证。'}</p></div>
+        }
         if (typeof data.summary === 'string' && Array.isArray(data.findings) && Array.isArray(data.unverified)) {
           return <div className="review-result"><p>模型审查意见；其中的状态不代表已运行测试或完成验证。</p><p>{data.summary}</p>
             {data.findings.map((item: unknown, index: number) => {
@@ -260,12 +265,13 @@ export function RunDetails({ run, events, connected, onClose, controls, agentRun
   const output = usage.output_tokens ?? usage.completion_tokens
   const cost = usage.cost_usd
   const isError = run?.status === 'failed' || run?.status === 'interrupted' || run?.status === 'pending_review'
+  const reviewWarning = reviewStatusWarning(run?.review_status)
   return <>
     {overlay && <div className={`run-panel-shade ${closing ? 'is-closing' : ''}`} onClick={close} aria-hidden="true" />}
     <aside ref={panelRef} className={`run-panel ${closing ? 'is-closing' : ''}`} role={overlay ? 'dialog' : 'complementary'} aria-modal={overlay || undefined} aria-labelledby="run-panel-heading">
     <div className="run-panel-title"><div><Activity size={18} /><h2 id="run-panel-heading">运行详情</h2></div><Button variant="ghost" size="icon" aria-label="收起运行详情" title="收起运行详情 · Esc" onClick={close}><PanelRightClose size={19} /></Button></div>
     {!run ? <div className="run-placeholder"><span><Activity size={27} /></span><h3>每一步，都有迹可循</h3><p>发送消息后，这里会显示真实的运行状态、模型用量和事件记录。</p><div className="placeholder-steps"><span><Circle size={10} />创建任务</span><i /><span><Circle size={10} />调用模型</span><i /><span><Circle size={10} />交付回答</span></div></div> : <>
-      <div className="run-summary"><div className="detail-label">当前运行</div><div className="run-status"><span className={`status-orb ${isError ? 'orb-red' : run.status === 'completed' ? 'orb-green' : terminalStatuses.has(run.status) ? '' : 'orb-blue'}`} /><h3>{run.workflow_type === 'agent' && run.workspace_id && run.status === 'completed' ? '流程已结束' : statusLabels[run.status]}</h3>{run.mode === 'mock' && <Badge tone="amber">MOCK</Badge>}</div>{run.workflow_type === 'agent' && run.workspace_id && run.status === 'completed' && <p className="detail-hint">流程结束表示答复已生成；目标是否达成请结合工具记录和工件核对。</p>}<p className="run-model"><Radio size={14} />{run.model_label}</p><p className="run-model"><GitBranch size={14} />运行版本：{typeof run.workflow_version === 'string' && run.workflow_version.trim() ? run.workflow_version : '未记录'}</p>{run.workflow_type === 'agent' && run.agent_strategy === 'single' && <p className="detail-hint">单 Agent 运行，不产生跨 Agent 交接或独立审查。</p>}<code className="run-id" title={run.id}><Hash size={11} />{run.id.slice(0, 16)}</code></div>
+      <div className="run-summary"><div className="detail-label">当前运行</div><div className="run-status"><span className={`status-orb ${isError ? 'orb-red' : run.status === 'completed' ? 'orb-green' : terminalStatuses.has(run.status) ? '' : 'orb-blue'}`} /><h3>{run.workflow_type === 'agent' && run.workspace_id && run.status === 'completed' ? '流程已结束' : statusLabels[run.status]}</h3>{reviewWarning && <Badge tone="amber">{reviewWarning.label}</Badge>}{run.mode === 'mock' && <Badge tone="amber">MOCK</Badge>}</div>{reviewWarning && <p className="detail-hint">{reviewWarning.message}</p>}{run.workflow_type === 'agent' && run.workspace_id && run.status === 'completed' && <p className="detail-hint">流程结束表示答复已生成；目标是否达成请结合工具记录和工件核对。</p>}<p className="run-model"><Radio size={14} />{run.model_label}</p><p className="run-model"><GitBranch size={14} />运行版本：{typeof run.workflow_version === 'string' && run.workflow_version.trim() ? run.workflow_version : '未记录'}</p>{run.workflow_type === 'agent' && run.agent_strategy === 'single' && <p className="detail-hint">单 Agent 运行，不产生跨 Agent 交接或独立审查。</p>}<code className="run-id" title={run.id}><Hash size={11} />{run.id.slice(0, 16)}</code></div>
       <ToolActivity key={run.id} run={run} />
       <RunObservation key={run.id} run={run} />
       <ActionOutcomePanel key={run.id} run={run} />

@@ -234,6 +234,8 @@ class Worker:
         except AgentOperationNeedsReview:
             raise ProviderError("SUMMARY_RESULT_UNKNOWN", "上次摘要结果未确认，未重复付费调用；原始记录保留。") from None
         except ContextPolicyError as exc:
+            from .context_host import record_context_rejection
+            record_context_rejection(self, identity, exc)
             raise ProviderError(exc.code, public_context_error(exc.code)) from None
         finally:
             if not task.done():
