@@ -7,7 +7,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-import re
 from operator import add
 from typing import Annotated, Literal, TypedDict
 
@@ -46,6 +45,7 @@ from .stage_contract import (
     STAGE_V1_WORKFLOW_VERSION,
     STAGE_WORKFLOW_VERSION,
 )
+from .structured_json import extract_json_payload, supports_stage_json_mode
 
 
 class StageOutputError(AgentBoundaryError):
@@ -252,14 +252,37 @@ def _digest(value):
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
 
+_READ_ONLY_WORKSPACE_TOOLS = frozenset({
+    "workspace_list", "workspace_read", "workspace_search", "artifact_read",
+})
+
+
+def _has_blocking_tool_for_clarification(
+    db, *, run_id: str, task_id: str, collaboration: bool, workflow_version: str,
+) -> bool:
+    from sqlalchemy import select
+
+    from .models import ToolOperation
+
+    operations = list(db.scalars(select(ToolOperation).where(ToolOperation.run_id == run_id)))
+    if not operations:
+        return False
+    if workflow_version == INTERACTIVE_V10_WORKFLOW_VERSION:
+        return True
+    for op in operations:
+        if op.status not in ("completed", "failed") or op.slot_claimed:
+            return True
+        owner_task = (op.result or {}).get("host_task_id") if isinstance(op.result, dict) else None
+        belongs_to_current = (owner_task == task_id) if (collaboration and owner_task is not None) else True
+        if belongs_to_current and op.tool_name not in _READ_ONLY_WORKSPACE_TOOLS:
+            return True
+    return False
+
+
 def _parse(content: str, schema):
-    # Accept standard fenced JSON without executing or repairing model output.
-    value = content.strip()
-    match = re.fullmatch(r"```(?:json)?\s*\n?(.*?)\n?```", value, flags=re.DOTALL | re.IGNORECASE)
-    if match:
-        value = match.group(1).strip()
+    # Accept raw JSON or one unambiguous closed Markdown JSON fence without repair.
     try:
-        return schema.model_validate_json(value)
+        return schema.model_validate_json(extract_json_payload(content))
     except (ValidationError, ValueError):
         raise StageOutputError("Stage produced invalid structured output") from None
 
@@ -276,9 +299,19 @@ def build_stage_graph(*, models, hooks, checkpointer, max_context_messages=100, 
     collaboration = workflow_version in COLLAB_WORKFLOWS
     interactive = workflow_version in {INTERACTIVE_STAGE_WORKFLOW_VERSION, INTERACTIVE_WORKFLOW_VERSION, INTERACTIVE_COMPAT_WORKFLOW_VERSION, INTERACTIVE_V9_WORKFLOW_VERSION, INTERACTIVE_V10_WORKFLOW_VERSION}
     handoff_enabled = workflow_version in {HANDOFF_WORKFLOW_VERSION, EVIDENCE_WORKFLOW_VERSION, INTERACTIVE_WORKFLOW_VERSION, INTERACTIVE_COMPAT_WORKFLOW_VERSION, INTERACTIVE_V9_WORKFLOW_VERSION, INTERACTIVE_V10_WORKFLOW_VERSION}
-    degrade_review = (review_failure_policy == "deliver_unreviewed"
-                      and workflow_version in {COLLAB_WORKFLOW_VERSION, HANDOFF_WORKFLOW_VERSION, EVIDENCE_WORKFLOW_VERSION}
-                      and execution_strategy in {"compact", "staged"})
+    degrade_review = (
+        review_failure_policy == "deliver_unreviewed"
+        and workflow_version in {
+            INTERACTIVE_STAGE_WORKFLOW_VERSION,
+            COLLAB_WORKFLOW_VERSION,
+            HANDOFF_WORKFLOW_VERSION,
+            EVIDENCE_WORKFLOW_VERSION,
+            INTERACTIVE_WORKFLOW_VERSION,
+            INTERACTIVE_COMPAT_WORKFLOW_VERSION,
+            INTERACTIVE_V9_WORKFLOW_VERSION,
+        }
+        and execution_strategy in {"compact", "staged"}
+    )
     if (execution_strategy not in ("staged", "single", "compact")
             or execution_strategy == "single" and not tools_enabled
             or execution_strategy == "compact" and not collaboration):
@@ -369,7 +402,7 @@ def build_stage_graph(*, models, hooks, checkpointer, max_context_messages=100, 
             raise AgentContextLimitExceeded("Stage input exceeds local context limit")
         return system, serialized
 
-    async def call_model(stage, messages, config, *, task_id=None):
+    async def call_model(stage, messages, config, *, task_id=None, structured_json=False):
         # Stages exchange public task artifacts, not another model's private
         # reasoning/signatures. Native messages remain intact in checkpoints.
         request_messages = [AIMessage(content=answer_text(message.content), id=message.id)
@@ -387,12 +420,21 @@ def build_stage_graph(*, models, hooks, checkpointer, max_context_messages=100, 
         evidence_review = workflow_version in {EVIDENCE_WORKFLOW_VERSION, INTERACTIVE_WORKFLOW_VERSION, INTERACTIVE_COMPAT_WORKFLOW_VERSION, INTERACTIVE_V9_WORKFLOW_VERSION, INTERACTIVE_V10_WORKFLOW_VERSION} and stage == "review"
         await hooks.check_control("model_calls", stage, None)
         request_policy = None
+        frozen_model = None
         if tools_enabled and hasattr(hooks, "worker"):
             from .request_policy import parse_request_policy
             async with hooks.serial:
                 with hooks.worker.transaction() as db:
                     _, frozen_role = hooks._run(db, stage, allow_supplements=True)
-                    request_policy = parse_request_policy(frozen_role["model"].get("parameters", {}))
+                    frozen_model = frozen_role["model"]
+                    request_policy = parse_request_policy(frozen_model.get("parameters", {}))
+        stage_model = models[stage]
+        if (
+            structured_json
+            and supports_stage_json_mode(frozen_model)
+            and callable(getattr(stage_model, "bind", None))
+        ):
+            stage_model = stage_model.bind(response_format={"type": "json_object"})
         if request_policy is not None:
             from .context_visibility import model_input_callback
             from .provider_recovery import run_provider_call
@@ -410,7 +452,7 @@ def build_stage_graph(*, models, hooks, checkpointer, max_context_messages=100, 
                 return callback
 
             async def dispatch(attempt):
-                response = await models[stage].ainvoke([system, *request_messages])
+                response = await stage_model.ainvoke([system, *request_messages])
                 return {"message": response.model_dump(mode="json")}
 
             transport = ("compatible-native-stream-v1" if
@@ -458,7 +500,7 @@ def build_stage_graph(*, models, hooks, checkpointer, max_context_messages=100, 
             raise AgentBudgetExceeded("Run budget exceeded before stage dispatch")
         try:
             async def model_and_save():
-                response = await models[stage].ainvoke([system, *request_messages])
+                response = await stage_model.ainvoke([system, *request_messages])
                 if tools_enabled:
                     await hooks.finish_invocation("model_calls", stage, None, identity,
                                                    result={"message": response.model_dump(mode="json")})
@@ -496,8 +538,11 @@ def build_stage_graph(*, models, hooks, checkpointer, max_context_messages=100, 
             messages = convert_to_messages(state["messages"])
             evidence_review = workflow_version in {EVIDENCE_WORKFLOW_VERSION, INTERACTIVE_WORKFLOW_VERSION, INTERACTIVE_COMPAT_WORKFLOW_VERSION, INTERACTIVE_V9_WORKFLOW_VERSION, INTERACTIVE_V10_WORKFLOW_VERSION} and stage == "review"
             content = None
+            is_json_stage = stage in {"plan", "dispatch"} or (
+                stage == "review" and workflow_version != STAGE_V1_WORKFLOW_VERSION
+            )
             try:
-                called = await call_model(stage, messages, config)
+                called = await call_model(stage, messages, config, structured_json=is_json_stage)
                 if evidence_review:
                     response, content, identity = called
                 else:
@@ -508,11 +553,8 @@ def build_stage_graph(*, models, hooks, checkpointer, max_context_messages=100, 
                     if collaboration:
                         from .m4_collaboration import CollaborationPlan
                         if workflow_version == INTERACTIVE_V10_WORKFLOW_VERSION:
-                            value = content.strip()
-                            match = re.fullmatch(r"```(?:json)?\s*\n?(.*?)\n?```", value,
-                                                 flags=re.DOTALL | re.IGNORECASE)
                             try:
-                                raw = json.loads(match.group(1).strip() if match else value)
+                                raw = json.loads(extract_json_payload(content))
                                 if not isinstance(raw, dict):
                                     raise ValueError
                                 candidates = raw.pop("action_candidates", None)
@@ -762,16 +804,15 @@ def build_stage_graph(*, models, hooks, checkpointer, max_context_messages=100, 
                     raise StageOutputError("Too many clarification rounds", code="CLARIFICATION_LIMIT",
                         public_message="子任务反复请求澄清，已停止以避免无限循环。")
                 if tools_enabled:
-                    # A resumed model could repeat earlier effects; until the
-                    # child graph supports a dedicated durable interrupt we
-                    # refuse to restart any Run that already used tools.
-                    from sqlalchemy import select
-
-                    from .models import ToolOperation
+                    # Mutating or unsettled tools cannot be safely re-entered; read-only
+                    # inspection in the current subtask or completed prior subtasks may clarify.
                     async with hooks.serial:
                         with hooks.worker.transaction() as db:
-                            used = db.scalar(select(ToolOperation.id).where(ToolOperation.run_id == hooks.run_id).limit(1))
-                    if used:
+                            blocked = _has_blocking_tool_for_clarification(
+                                db, run_id=hooks.run_id, task_id=task["id"],
+                                collaboration=collaboration, workflow_version=workflow_version,
+                            )
+                    if blocked:
                         raise StageOutputError("Tool-bearing mid-task clarification requires review",
                             code="CLARIFICATION_REQUIRES_REVIEW",
                             public_message="子任务需要进一步询问，但任务已调用工具；为避免重复操作，已停止并保留记录。")
@@ -812,7 +853,9 @@ def build_stage_graph(*, models, hooks, checkpointer, max_context_messages=100, 
                     system_message=SystemMessage(content="你是 OmniHarness 的阶段 Agent。只依据提供的信息工作，不得虚构工具操作或验证结果。"),
                     checkpoint_ns=config["configurable"].get("checkpoint_ns", ""), task_id="interaction-preflight")
                 messages = list(prepared.messages)
-            _, content = await call_model("think", messages, config, task_id="interaction-preflight")
+            _, content = await call_model(
+                "think", messages, config, task_id="interaction-preflight", structured_json=True,
+            )
             decision = _parse(content, UserDecision)
             return {"interaction_decision": decision.model_dump(mode="json")}
 
@@ -993,6 +1036,13 @@ def build_stage_graph(*, models, hooks, checkpointer, max_context_messages=100, 
     async def finish_interactive(state, config):
         instruction = ("请直接回答用户原始问题，综合已经完成的工作和审查，"
                        "不要逐条粘贴子任务原文。只依据真实记录说明验证和未验证事项；不要虚构执行结果。")
+        if state.get("review_status") in REVIEW_DEGRADED_REASONS:
+            reason_code = state["review_status"]
+            instruction += (
+                f"\n注意：本次后置独立审查未完成（review_status={reason_code}，"
+                f"{REVIEW_DEGRADED_REASONS[reason_code]}）。"
+                "请在回复中如实说明独立审查未完成，严禁声称独立审查已完成或通过。"
+            )
         if workflow_version in {INTERACTIVE_V9_WORKFLOW_VERSION, INTERACTIVE_V10_WORKFLOW_VERSION}:
             from .review_evidence import load_review_evidence
             packet = await load_review_evidence(hooks)

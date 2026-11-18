@@ -1,8 +1,6 @@
 """Isolated PostgreSQL, real Worker/checkpoints and deterministic offline models."""
 # ruff: noqa: F811
-import asyncio
 import json
-import sys
 from uuid import uuid4
 
 import pytest
@@ -29,11 +27,6 @@ from omniharness.models import Clarification, Run, ToolOperation
 from omniharness.security import create_pairing_code
 from omniharness.stage_contract import STAGE_KEYS
 from omniharness.worker import Worker, WorkerLock
-
-
-@pytest.fixture(scope="module")
-def event_loop_policy():
-    return asyncio.WindowsSelectorEventLoopPolicy() if sys.platform == "win32" else asyncio.get_event_loop_policy()
 
 
 class PreflightQuestion(InteractiveStage):

@@ -65,21 +65,39 @@ def enrich_tasks(dispatch, plan):
                       for task in dispatch["tasks"]]}
 
 
-def independent_batch(ready):
-    """Unknown/shared write scopes serialize; declared disjoint scopes may run two."""
+def _paths_overlap(claimed_keys: set[str], candidate_paths: list[str]) -> bool:
+    for raw in candidate_paths:
+        candidate = raw.casefold()
+        if any(
+            existing == candidate
+            or existing.startswith(candidate + "/")
+            or candidate.startswith(existing + "/")
+            for existing in claimed_keys
+        ):
+            return True
+    return False
+
+
+def independent_batch(ready, *, max_parallel: int = 4):
+    """Unknown/shared write scopes serialize; declared disjoint scopes run up to max_parallel."""
     if not ready:
         return []
+    if max_parallel < 1:
+        raise ValueError("max_parallel must be positive")
     first = ready[0]
     paths = first.get("write_paths")
-    if paths is None:
+    if paths is None or max_parallel == 1:
         return [first]
-    keys = {path.casefold() for path in paths}
+    selected = [first]
+    claimed_keys = {path.casefold() for path in paths}
     for other in ready[1:]:
+        if len(selected) >= max_parallel:
+            break
         right = other.get("write_paths")
-        if right is not None and not any(a == b.casefold() or a.startswith(b.casefold() + "/")
-                                        or b.casefold().startswith(a + "/") for a in keys for b in right):
-            return [first, other]
-    return [first]
+        if right is not None and not _paths_overlap(claimed_keys, right):
+            selected.append(other)
+            claimed_keys.update(path.casefold() for path in right)
+    return selected
 
 
 async def protected_task_messages(host, messages):

@@ -1,5 +1,4 @@
 """Dedicated PG/fenced graph tests, with local models and sandbox test double."""
-import asyncio
 import os
 import sys
 from uuid import uuid4
@@ -15,11 +14,6 @@ from omniharness.checkpoint_fencing import initialize_checkpoint_schema
 from omniharness.models import Approval, Run, RunBudget, RunCommand, ToolOperation, WorkspaceLease
 from omniharness.security import create_pairing_code
 from omniharness.worker import Worker, WorkerLock
-
-
-@pytest.fixture
-def event_loop_policy():
-    return asyncio.WindowsSelectorEventLoopPolicy() if sys.platform == "win32" else asyncio.get_event_loop_policy()
 
 
 @pytest.mark.asyncio

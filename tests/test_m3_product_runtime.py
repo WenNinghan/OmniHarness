@@ -2,7 +2,6 @@
 
 import asyncio
 import os
-import sys
 from typing import Any
 from uuid import uuid4
 
@@ -28,13 +27,6 @@ from omniharness.schemas import RunCommandRequest
 from omniharness.security import create_pairing_code
 from omniharness.services import apply_commands, submit_command
 from omniharness.worker import Worker, WorkerLock, WorkerOwnershipLost
-
-
-@pytest.fixture
-def event_loop_policy():
-    if sys.platform == "win32":
-        return asyncio.WindowsSelectorEventLoopPolicy()
-    return asyncio.get_event_loop_policy()
 
 
 class LocalAnswer(BaseChatModel):

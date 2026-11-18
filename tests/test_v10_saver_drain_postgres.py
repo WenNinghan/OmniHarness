@@ -1,7 +1,6 @@
 """Disposable PostgreSQL tests for the saver-local write barrier."""
 
 import asyncio
-import sys
 import threading
 from contextlib import asynccontextmanager
 from uuid import uuid4
@@ -25,15 +24,6 @@ from omniharness.v10_sealed_saver import (
     create_seal_origin,
 )
 from omniharness.worker import WorkerLock
-
-
-@pytest.fixture(scope="module")
-def event_loop_policy():
-    return (
-        asyncio.WindowsSelectorEventLoopPolicy()
-        if sys.platform == "win32"
-        else asyncio.get_event_loop_policy()
-    )
 
 
 @asynccontextmanager

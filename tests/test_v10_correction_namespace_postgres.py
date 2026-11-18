@@ -1,7 +1,5 @@
 """Disposable PostgreSQL namespace mapping experiment; no tools or models."""
 
-import asyncio
-import sys
 from typing import TypedDict
 
 import pytest
@@ -13,15 +11,6 @@ from test_postgres import postgres_environment  # noqa: F401
 from test_v10_saver_drain_postgres import input_checkpoint, prepared
 
 from omniharness.v10_namespace_prototype import CorrectionNamespacePrototype
-
-
-@pytest.fixture(scope="module")
-def event_loop_policy():
-    return (
-        asyncio.WindowsSelectorEventLoopPolicy()
-        if sys.platform == "win32"
-        else asyncio.get_event_loop_policy()
-    )
 
 
 @pytest.mark.asyncio

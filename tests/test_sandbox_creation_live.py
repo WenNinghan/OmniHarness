@@ -60,11 +60,6 @@ class LiveEnvironment(dict):
         return "Isolated creation environment " + self["nonce"]
 
 
-@pytest.fixture(scope="module")
-def event_loop_policy():
-    return asyncio.WindowsSelectorEventLoopPolicy() if sys.platform == "win32" else asyncio.get_event_loop_policy()
-
-
 def settings_for(state, directory):
     return Settings(_env_file=None, database_url=state["database_url"], data_dir=directory / "data",
         secret_dir=directory / "secrets", static_dir=directory / "no-web", allowed_origins="http://testserver",

@@ -29,11 +29,6 @@ from omniharness.security import create_pairing_code
 from omniharness.services import add_event
 
 
-@pytest.fixture(scope="module")
-def event_loop_policy():
-    return asyncio.WindowsSelectorEventLoopPolicy() if sys.platform == "win32" else asyncio.get_event_loop_policy()
-
-
 async def _start_owner(ready, child_env):
     ready.unlink(missing_ok=True)
     child = subprocess.Popen([sys.executable, str(Path(__file__).with_name("v10_owner_handshake_child.py"))],

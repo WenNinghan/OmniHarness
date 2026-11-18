@@ -88,6 +88,7 @@ def build_review_evidence(db, run, store, *, operation_ids=None, max_characters=
             if not matches or op.status != "completed" or item.get("resulting_source", {}).get("truncated"):
                 item["evidence_status"] = "UNVERIFIED"
         if op.tool_name == "run_command":
+            from .shell_command_audit import detect_compound_exit_masking
             snapshot = db.get(WorkspaceSnapshot, op.snapshot_id) if op.snapshot_id else None
             manifest = snapshot.manifest if snapshot is not None else {}
             scoped = bool(snapshot and snapshot.run_id == run.id and snapshot.workspace_id == run.workspace_id
@@ -97,11 +98,14 @@ def build_review_evidence(db, run, store, *, operation_ids=None, max_characters=
             files = {x.get("path"): x.get("sha256") for x in manifest.get("files", [])} if scoped else {}
             matched = (bool(targets) and len(targets) == len(all_targets) and scoped
                        and all(files.get(path) == digest for path, digest in targets.items()))
+            masking = detect_compound_exit_masking(op.parameters.get("command"))
             item.update(command=_clip(op.parameters.get("command"), 2500), cwd=op.parameters.get("cwd"),
                         exit_code=result.get("exit_code"), snapshot_id=op.snapshot_id,
                         snapshot_scope_valid=scoped, target_versions_match=matched,
                         snapshot_version_scope="initial_copy_only", runtime_mutations_verified=False,
-                        tested_versions={path: files.get(path) for path in targets})
+                        tested_versions={path: files.get(path) for path in targets},
+                        **({"compound_exit_masking": list(masking), "exit_code_scope": "terminal_segment_only"}
+                           if masking else {}))
             # Shell can edit its private copy before testing. Initial manifest
             # equality does not prove the executed code stayed at that version.
             item["evidence_status"] = "UNVERIFIED"

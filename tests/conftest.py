@@ -1,3 +1,6 @@
+import asyncio
+import sys
+
 import pytest
 from fastapi.testclient import TestClient
 
@@ -46,3 +49,10 @@ def create_chat(client, adapter="mock", api_key=None):
     })
     assert run.status_code == 202, run.text
     return model, conversation, run.json()
+
+
+def pytest_configure(config):
+    del config
+    if sys.platform == "win32":
+        # Psycopg async connections require SelectorEventLoop on Windows.
+        asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())

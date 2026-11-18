@@ -21,11 +21,6 @@ from omniharness.v10_sealed_saver import SEALED_PLUGIN_VERSIONS, V10SealedSaver,
 from omniharness.worker import WorkerLock
 
 
-@pytest.fixture(scope="module")
-def event_loop_policy():
-    return asyncio.WindowsSelectorEventLoopPolicy() if sys.platform == "win32" else asyncio.get_event_loop_policy()
-
-
 @pytest.mark.asyncio
 async def test_sealed_saver_graph_commits_checkpoint_and_chain(postgres_environment, tmp_path, monkeypatch):
     from copy import deepcopy

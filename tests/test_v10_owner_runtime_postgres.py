@@ -1,7 +1,6 @@
 """Offline real API/Worker qualification tests; no model or tool dispatch."""
 # ruff: noqa: F811
 import asyncio
-import sys
 import time
 from typing import ClassVar
 from uuid import uuid4
@@ -90,11 +89,6 @@ class WaitingCorrectionModel(NoToolsModel):
                     type(self).correction_cancelled.set()
                 raise
         return self._generate(messages, **kwargs)
-
-
-@pytest.fixture(scope="module")
-def event_loop_policy():
-    return asyncio.WindowsSelectorEventLoopPolicy() if sys.platform == "win32" else asyncio.get_event_loop_policy()
 
 
 @pytest.mark.asyncio

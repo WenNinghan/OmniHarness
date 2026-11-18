@@ -4,7 +4,6 @@ Closure, consumed identity, model response, sealing and graph proof are doubles.
 These tests do not establish production correction eligibility or dispatch tools.
 """
 import asyncio
-import sys
 from types import SimpleNamespace
 from uuid import uuid4
 
@@ -32,11 +31,6 @@ from omniharness.security import create_pairing_code
 from omniharness.services import begin_operation, operation_id
 from omniharness.v10_owner_runtime import V10OwnerListener, _ConsumedCorrectionReceipt
 from omniharness.worker import WorkerLock
-
-
-@pytest.fixture(scope="module")
-def event_loop_policy():
-    return asyncio.WindowsSelectorEventLoopPolicy() if sys.platform == "win32" else asyncio.get_event_loop_policy()
 
 
 @pytest.mark.asyncio

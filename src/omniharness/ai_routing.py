@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-import re
 from typing import Literal
 from urllib.parse import urlsplit
 
@@ -21,6 +20,7 @@ from .providers import ProviderError, _safe_error, build_chat_model, validate_co
 from .schemas import StrictModel
 from .services import ServiceError, runtime_config
 from .stage_contract import STAGE_KEYS
+from .structured_json import extract_json_payload
 
 
 class PlanRequest(StrictModel):
@@ -119,11 +119,8 @@ def _parse_response(response, candidate_ids, protected_keys):
         raise ServiceError("PLANNER_OUTPUT_INVALID", exc.public_message + "未应用任何模型分配。", 422) from None
     if not value or len(value) > 20000 or any(key in value for key in protected_keys):
         raise ServiceError("PLANNER_OUTPUT_INVALID", "AI 规划返回内容无效，未应用任何模型分配。", 422)
-    match = re.fullmatch(r"```(?:json)?\s*\n?(.*?)\n?```", value, re.IGNORECASE | re.DOTALL)
-    if match:
-        value = match.group(1).strip()
     try:
-        result = PlanOutput.model_validate_json(value)
+        result = PlanOutput.model_validate_json(extract_json_payload(value))
     except Exception:
         raise ServiceError("PLANNER_OUTPUT_INVALID", "AI 规划输出格式无效，未应用任何模型分配。", 422) from None
     if any(item.model_config_id not in candidate_ids for item in result.stages):
