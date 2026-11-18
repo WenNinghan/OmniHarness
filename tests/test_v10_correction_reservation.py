@@ -1,7 +1,6 @@
 """No model calls: real sealed checkpoints and a test-only synthetic closure gate."""
 
 import asyncio
-import sys
 from concurrent.futures import ThreadPoolExecutor
 from copy import deepcopy
 from typing import TypedDict
@@ -31,15 +30,6 @@ from omniharness.security import create_pairing_code
 from omniharness.services import BudgetLimits, ensure_budget
 from omniharness.v10_sealed_saver import SEALED_PLUGIN_VERSIONS, V10SealedSaver, create_seal_origin
 from omniharness.worker import Worker, WorkerLock
-
-
-@pytest.fixture(scope="module")
-def event_loop_policy():
-    return (
-        asyncio.WindowsSelectorEventLoopPolicy()
-        if sys.platform == "win32"
-        else asyncio.get_event_loop_policy()
-    )
 
 
 @pytest.mark.asyncio

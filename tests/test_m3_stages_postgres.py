@@ -23,13 +23,6 @@ from omniharness.stage_contract import STAGE_KEYS, STAGE_WORKFLOW_VERSION
 from omniharness.worker import Worker, WorkerLock
 
 
-@pytest.fixture
-def event_loop_policy():
-    if sys.platform == "win32":
-        return asyncio.WindowsSelectorEventLoopPolicy()
-    return asyncio.get_event_loop_policy()
-
-
 @pytest.mark.asyncio
 async def test_real_worker_uses_five_frozen_model_selections(request, monkeypatch):
     settings, engine, factory, _ = request.getfixturevalue("postgres_environment")

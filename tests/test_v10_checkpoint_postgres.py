@@ -1,7 +1,6 @@
 """Fence pin checks against the disposable PostgreSQL test database only."""
 # ruff: noqa: F811
 import asyncio
-import sys
 from dataclasses import replace
 from typing import TypedDict
 from uuid import uuid4
@@ -14,11 +13,6 @@ from omniharness.checkpoint_fencing import initialize_checkpoint_schema, open_fe
 from omniharness.m3_worker import _checkpoint_url
 from omniharness.v10_closure import CheckpointPinUnavailable, pin_checkpoint_watermark
 from omniharness.worker import Worker, WorkerLock
-
-
-@pytest.fixture(scope="module")
-def event_loop_policy():
-    return asyncio.WindowsSelectorEventLoopPolicy() if sys.platform == "win32" else asyncio.get_event_loop_policy()
 
 
 @pytest.mark.asyncio

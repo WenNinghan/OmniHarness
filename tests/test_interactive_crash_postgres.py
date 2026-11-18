@@ -85,11 +85,6 @@ def crash_worker(settings_data, workspace, project_parent, run_id, crash_before_
     os._exit(92)
 
 
-@pytest.fixture(scope='module')
-def event_loop_policy():
-    return asyncio.WindowsSelectorEventLoopPolicy() if sys.platform == 'win32' else asyncio.get_event_loop_policy()
-
-
 @pytest.mark.asyncio
 @pytest.mark.parametrize('scenario', ['safe', 'before_checkpoint', 'boot_change', 'uncertain_tool'])
 @pytest.mark.parametrize('workflow_version', [INTERACTIVE_WORKFLOW_VERSION, INTERACTIVE_COMPAT_WORKFLOW_VERSION,

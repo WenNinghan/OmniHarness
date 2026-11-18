@@ -1,9 +1,7 @@
 """Synthetic-key canary with an official adapter and a loopback-only server."""
 
-import asyncio
 import json
 import os
-import sys
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from uuid import uuid4
@@ -28,13 +26,6 @@ from omniharness.security import create_pairing_code
 from omniharness.worker import Worker, WorkerLock
 
 CANARY = "synthetic-test-only-key-canary-please-never-use"
-
-
-@pytest.fixture
-def event_loop_policy():
-    if sys.platform == "win32":
-        return asyncio.WindowsSelectorEventLoopPolicy()
-    return asyncio.get_event_loop_policy()
 
 
 @pytest.mark.asyncio

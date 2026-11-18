@@ -3,7 +3,6 @@
 import asyncio
 import json
 import os
-import sys
 from dataclasses import replace
 from types import SimpleNamespace
 from uuid import uuid4
@@ -48,15 +47,6 @@ from omniharness.schemas import RunCommandRequest
 from omniharness.security import create_pairing_code
 from omniharness.services import submit_command
 from omniharness.worker import Worker, WorkerLock, WorkerOwnershipLost
-
-
-@pytest.fixture
-def event_loop_policy():
-    # Psycopg async connections require Selector on Windows. No global policy
-    # change or password-bearing fixture repr is needed.
-    if sys.platform == "win32":
-        return asyncio.WindowsSelectorEventLoopPolicy()
-    return asyncio.get_event_loop_policy()
 
 
 def prepared(settings, engine, factory, client):

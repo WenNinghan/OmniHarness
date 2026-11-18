@@ -1,7 +1,6 @@
 """Isolated experiment only: no production saver or database migration."""
 # ruff: noqa: F811
 import asyncio
-import sys
 from typing import TypedDict
 from uuid import uuid4
 
@@ -20,11 +19,6 @@ from omniharness.models import OperationRecord, Run
 from omniharness.security import create_pairing_code
 from omniharness.v10_closure import pin_checkpoint_watermark
 from omniharness.worker import WorkerLock
-
-
-@pytest.fixture(scope="module")
-def event_loop_policy():
-    return asyncio.WindowsSelectorEventLoopPolicy() if sys.platform == "win32" else asyncio.get_event_loop_policy()
 
 
 @pytest.mark.asyncio

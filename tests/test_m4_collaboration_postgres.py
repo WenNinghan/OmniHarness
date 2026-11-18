@@ -1,7 +1,5 @@
 """v4 uses the existing real PG fencing/restart suite with local-only models."""
-import asyncio
 import os
-import sys
 from uuid import uuid4
 
 import pytest
@@ -15,11 +13,6 @@ from omniharness.checkpoint_fencing import initialize_checkpoint_schema
 from omniharness.models import Run, RunBudget, ToolOperation
 from omniharness.security import create_pairing_code
 from omniharness.worker import WorkerLock
-
-
-@pytest.fixture
-def event_loop_policy():
-    return asyncio.WindowsSelectorEventLoopPolicy() if sys.platform == "win32" else asyncio.get_event_loop_policy()
 
 
 @pytest.mark.asyncio

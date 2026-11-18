@@ -616,5 +616,9 @@ class WorkspaceToolGateway:
                         self.artifacts.put(db, run_id=self.host.run_id, operation_id=op_id,
                                            workspace_id=self.workspace["id"], **payload)
             raise error
+        from .shell_command_audit import detect_compound_exit_masking
+        masking = detect_compound_exit_masking(parameters.get("command"))
         return {**asdict(result), "snapshot_id": snapshot_id, "_artifact_payloads": artifacts,
+                **({"compound_exit_masking": list(masking), "exit_code_scope": "terminal_segment_only"}
+                   if masking else {}),
                 **({"error": "COMMAND_FAILED"} if result.exit_code else {})}

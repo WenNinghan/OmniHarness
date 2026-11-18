@@ -1,5 +1,4 @@
 """Opt-in isolated PostgreSQL Worker interaction; no provider calls."""
-import asyncio
 import json
 import sys
 from uuid import uuid4
@@ -30,11 +29,6 @@ from omniharness.models import Clarification, Run
 from omniharness.security import create_pairing_code
 from omniharness.stage_contract import STAGE_KEYS
 from omniharness.worker import Worker, WorkerLock
-
-
-@pytest.fixture(scope="module")
-def event_loop_policy():
-    return asyncio.WindowsSelectorEventLoopPolicy() if sys.platform == "win32" else asyncio.get_event_loop_policy()
 
 
 class QuestionToolModel(BaseChatModel):
