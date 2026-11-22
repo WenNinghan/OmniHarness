@@ -7,3 +7,19 @@
 .context-settings{border:1px solid #ffffff20;border-radius:12px;padding:14px;margin:4px 0 18px}.context-settings legend{font-size:14px;padding:0 7px}.context-settings>p{margin-bottom:14px}.context-settings .form-columns{margin-top:12px}
 
 .workspace-manager,.workspace-manager:has(.workspace-form){padding:8px 24px 24px}@media(max-width:600px){.workspace-manager,.workspace-manager:has(.workspace-form){padding:8px 18px 20px}}
+.tool-record>summary{flex-wrap:wrap}
+.tool-warning{margin:8px 0;padding:8px 11px;border:1px solid #d8c59845;border-radius:8px;background:#d8c5980d;color:#e5d3a7;font-size:12px;line-height:1.6}
+.patch-diff{font-family:'Cascadia Code',Consolas,monospace;font-size:12px;line-height:1.55;max-height:320px;overflow:auto;background:#090909;border:1px solid #ffffff1a;border-radius:8px;padding:8px 0;margin:8px 0}
+.diff-line{padding:0 11px;white-space:pre-wrap;overflow-wrap:anywhere;color:#cfd4de}
+.diff-add{background:#1b382680;color:#bce8cb}
+.diff-del{background:#471d2280;color:#f1b8bd}
+.diff-hunk{background:#ffffff0b;color:#a8b6cc}
+.diff-meta{color:#8c93a0}
+.tool-raw{margin-top:8px}
+.tool-raw>summary{cursor:pointer;font-size:12px;color:#9399a5;user-select:none}
+.stage-timeline{display:flex;flex-direction:column;gap:10px}
+.stage-timeline-item{display:flex;flex-direction:column;gap:5px}
+.stage-duration{font-family:'Cascadia Code',Consolas,monospace;font-size:11px;color:#9399a5}
+.stage-bar-track{height:3px;width:100%;background:#ffffff14;border-radius:999px;overflow:hidden}
+.stage-bar-fill{height:100%;background:#d8dce6;border-radius:999px;transition:width .2s ease}
+.stage-bar-fill.is-running{background:#ffffff88}

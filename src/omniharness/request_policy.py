@@ -9,6 +9,7 @@ import math
 from dataclasses import dataclass
 
 REQUEST_POLICY_KEY = "omni_request_policy"
+STAGE_JSON_MODE_KEY = "omni_stage_json_mode"
 
 
 class RequestPolicyError(ValueError):
@@ -56,6 +57,8 @@ def _seconds(value, *, zero=False, maximum=3600):
 def parse_request_policy(parameters: dict) -> RequestPolicy | None:
     if not isinstance(parameters, dict):
         raise RequestPolicyError("Model parameters must be an object")
+    if STAGE_JSON_MODE_KEY in parameters and type(parameters[STAGE_JSON_MODE_KEY]) is not bool:
+        raise RequestPolicyError("Stage JSON mode parameter must be a boolean")
     if REQUEST_POLICY_KEY not in parameters:
         return None
     policy = _object(parameters[REQUEST_POLICY_KEY], {"version", "timeouts", "recovery"})
@@ -82,5 +85,5 @@ def parse_request_policy(parameters: dict) -> RequestPolicy | None:
 
 
 def provider_parameters(parameters: dict) -> dict:
-    """Remove only the reserved host namespace; callers validate vendor fields."""
-    return {key: value for key, value in parameters.items() if key != REQUEST_POLICY_KEY}
+    """Remove only reserved host namespaces; callers validate vendor fields."""
+    return {key: value for key, value in parameters.items() if key not in {REQUEST_POLICY_KEY, STAGE_JSON_MODE_KEY}}

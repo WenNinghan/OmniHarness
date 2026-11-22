@@ -141,7 +141,12 @@ def snapshot_model(db, identity):
 
 def frozen_model_capabilities(snapshot, capabilities):
     """Carry only evaluated protocol capabilities bound to this model snapshot."""
-    from .providers import NATIVE_AGENT_STREAM, freeze_summary_capability, summary_capability_binding
+    from .providers import (
+        NATIVE_AGENT_STREAM,
+        freeze_json_mode_capability,
+        freeze_summary_capability,
+        summary_capability_binding,
+    )
 
     capabilities = capabilities if isinstance(capabilities, dict) else {}
     result = {}
@@ -155,6 +160,9 @@ def frozen_model_capabilities(snapshot, capabilities):
     summary = freeze_summary_capability(snapshot, capabilities.get("summary_non_thinking"))
     if summary:
         result["summary_non_thinking"] = summary
+    json_mode = freeze_json_mode_capability(snapshot, capabilities.get("json_mode"))
+    if json_mode is not None:
+        result["json_mode"] = json_mode
     return result
 
 
@@ -284,6 +292,7 @@ def run_output(run):
         "workflow_version": run.workflow_version,
         "budget": (snapshot.get("agent") or {}).get("budget"),
         "review_failure_policy": (snapshot.get("agent") or {}).get("review_failure_policy", "fail"),
+        "review_revision_policy": (snapshot.get("agent") or {}).get("review_revision_policy", "off"),
         "models": {role: {**{key: (value.get("model") or {}).get(key) for key in (
             "id", "model_name", "version", "max_output_tokens", "context_policy",
         )}, "transport": NATIVE_AGENT_STREAM if agent_streaming_enabled(
@@ -1098,9 +1107,11 @@ def freeze_stage_run_config(db, run, settings, *, stage_overrides=None, strategy
     limits = budget_limits(settings)
     selected_version = settings.stage_workflow_version
     review_policy = getattr(settings, "review_failure_policy", "fail") if settings is not None else "fail"
+    revision_policy = getattr(settings, "review_revision_policy", "off") if settings is not None else "off"
     run.config_snapshot = {**snapshot(run.model_config_id), "workflow_type": "agent", "agent": {
         "workflow_version": selected_version, "role_binding_version": binding_set.version,
         "roles": frozen, "override_request": override_request, "plugin_versions": {}, "budget": asdict(limits),
-        **({"review_failure_policy": review_policy} if review_policy != "fail" else {})}}
+        **({"review_failure_policy": review_policy} if review_policy != "fail" else {}),
+        **({"review_revision_policy": revision_policy} if revision_policy != "off" else {})}}
     run.workflow_version, run.thread_id = selected_version, run.id
     ensure_budget(db, run.id, limits)

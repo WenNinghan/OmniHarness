@@ -143,6 +143,39 @@ class StageState(TypedDict, total=False):
     task_goal: str
     interaction_decision: dict
     task_answers: dict
+    revision_round: int
+    revision_decision: str
+    revision_feedback: str
+    revision_history: list[dict]
+
+
+def _extract_actionable_review_failures(review_data: dict | None, review_status: str | None) -> list[dict]:
+    """Return bounded FAIL findings only when review completed without degradation."""
+    if review_status in REVIEW_DEGRADED_REASONS or not isinstance(review_data, dict):
+        return []
+    if review_data.get("status") == "UNAVAILABLE":
+        return []
+    findings = review_data.get("findings")
+    if not isinstance(findings, list):
+        return []
+    failures = []
+    for item in findings:
+        if not isinstance(item, dict):
+            continue
+        status = item.get("status") or item.get("model_status")
+        if status != "FAIL":
+            continue
+        failures.append(
+            {
+                "location": str(item.get("location") or ""),
+                "severity": str(item.get("severity") or ""),
+                "description": str(item.get("description") or ""),
+                "recommendation": str(item.get("recommendation") or ""),
+            }
+        )
+        if len(failures) >= 20:
+            break
+    return failures
 
 
 REVIEW_DEGRADED_REASONS = {
@@ -289,12 +322,14 @@ def _parse(content: str, schema):
 
 def build_stage_graph(*, models, hooks, checkpointer, max_context_messages=100, max_context_characters=200_000,
                       workflow_version=STAGE_WORKFLOW_VERSION, execution_agent=None, execution_strategy="staged",
-                      review_failure_policy="fail"):
+                      review_failure_policy="fail", review_revision_policy="off"):
     """Build a versioned durable five-stage graph (external tools not available)."""
     if workflow_version not in (STAGE_V1_WORKFLOW_VERSION, STAGE_WORKFLOW_VERSION, INTERACTIVE_STAGE_WORKFLOW_VERSION, *WORKSPACE_WORKFLOWS):
         raise ValueError("Unsupported stage workflow version")
     if review_failure_policy not in ("fail", "deliver_unreviewed"):
         raise ValueError("Unsupported review failure policy")
+    if review_revision_policy not in ("off", "bounded"):
+        raise ValueError("Unsupported review revision policy")
     tools_enabled = workflow_version in WORKSPACE_WORKFLOWS
     collaboration = workflow_version in COLLAB_WORKFLOWS
     interactive = workflow_version in {INTERACTIVE_STAGE_WORKFLOW_VERSION, INTERACTIVE_WORKFLOW_VERSION, INTERACTIVE_COMPAT_WORKFLOW_VERSION, INTERACTIVE_V9_WORKFLOW_VERSION, INTERACTIVE_V10_WORKFLOW_VERSION}
@@ -311,6 +346,11 @@ def build_stage_graph(*, models, hooks, checkpointer, max_context_messages=100, 
             INTERACTIVE_V9_WORKFLOW_VERSION,
         }
         and execution_strategy in {"compact", "staged"}
+    )
+    allow_revision = (
+        review_revision_policy == "bounded"
+        and execution_strategy in {"compact", "staged"}
+        and workflow_version not in {STAGE_V1_WORKFLOW_VERSION, INTERACTIVE_V10_WORKFLOW_VERSION}
     )
     if (execution_strategy not in ("staged", "single", "compact")
             or execution_strategy == "single" and not tools_enabled
@@ -355,6 +395,8 @@ def build_stage_graph(*, models, hooks, checkpointer, max_context_messages=100, 
                 instruction += ("\n每个 candidate_refs 引用须明确 dimension：execution、exit_code、log、"
                                 "initial_snapshot 或 runtime_source。log 引用还须提供 artifact_id 和 "
                                 "expected_sha256；各维度独立核验，退出码 0 不证明源码一致或质量。")
+            rev_round = int(state.get("revision_round", 0) or 0) if stage == "review" else 0
+            evidence_id = "omni-evidence:review" if rev_round == 0 else f"omni-evidence:review:r{rev_round}"
             protected_evidence = ()
             if collaboration and stage in ("dispatch", "review"):
                 from .m4_collaboration import protected_task_messages
@@ -362,7 +404,7 @@ def build_stage_graph(*, models, hooks, checkpointer, max_context_messages=100, 
             if collaboration and stage == "review":
                 from .review_evidence import load_review_evidence
                 packet = await load_review_evidence(hooks)
-                evidence_message = HumanMessage(id="omni-evidence:review", content=json.dumps({
+                evidence_message = HumanMessage(id=evidence_id, content=json.dumps({
                     "host_evidence": packet,
                     "executor_claims": state.get("execution", ""),
                     "acceptance": state.get("plan", {}),
@@ -376,19 +418,22 @@ def build_stage_graph(*, models, hooks, checkpointer, max_context_messages=100, 
                 # stage instruction, never replay all previous stage requests.
                 instruction += "\n本阶段只输出任务分配 JSON。下面是已校验的完整计划：\n" + json.dumps(
                     state["plan"], ensure_ascii=False, separators=(",", ":"))
-            messages = [*messages, *additions, HumanMessage(content=instruction,
-                        id=f"omni-stage:{stage}" if tools_enabled else None)]
+            stage_msg_id = (
+                f"omni-stage:review:r{rev_round}" if stage == "review" and rev_round > 0 else f"omni-stage:{stage}"
+            ) if tools_enabled else None
+            messages = [*messages, *additions, HumanMessage(content=instruction, id=stage_msg_id)]
             if tools_enabled:
                 from .context_host import prepare_agent_context
                 messages = [message.model_copy(update={"id": message.id or "omni-source:" + _digest({
                     "index": index, "type": message.type, "content": message.content,
                 })}) for index, message in enumerate(messages)]
                 if protected_evidence:
-                    protected_evidence = tuple(message for message in messages if message.id == "omni-evidence:review")
+                    protected_evidence = tuple(message for message in messages if message.id == evidence_id)
+                prep_task_id = f"prepare-review-r{rev_round}" if stage == "review" and rev_round > 0 else f"prepare-{stage}"
                 prepared = await prepare_agent_context(hooks, stage, messages, model=models[stage],
                     protected_messages=protected_evidence,
                     system_message=SystemMessage(content="你是 OmniHarness 的阶段 Agent。只依据提供的信息工作，不得虚构工具操作或验证结果。"),
-                    checkpoint_ns=config["configurable"].get("checkpoint_ns", ""), task_id=f"prepare-{stage}")
+                    checkpoint_ns=config["configurable"].get("checkpoint_ns", ""), task_id=prep_task_id)
                 messages = list(prepared.messages)
             return {"messages": messages}
         return prepare
@@ -541,8 +586,12 @@ def build_stage_graph(*, models, hooks, checkpointer, max_context_messages=100, 
             is_json_stage = stage in {"plan", "dispatch"} or (
                 stage == "review" and workflow_version != STAGE_V1_WORKFLOW_VERSION
             )
+            rev_round = int(state.get("revision_round", 0) or 0) if stage == "review" else 0
+            stage_task_id = f"revision-{rev_round}" if stage == "review" and rev_round > 0 else None
             try:
-                called = await call_model(stage, messages, config, structured_json=is_json_stage)
+                called = await call_model(
+                    stage, messages, config, task_id=stage_task_id, structured_json=is_json_stage
+                )
                 if evidence_review:
                     response, content, identity = called
                 else:
@@ -1072,6 +1121,190 @@ def build_stage_graph(*, models, hooks, checkpointer, max_context_messages=100, 
         return {"messages": [*state["messages"], AIMessage(content=answer)]}
 
     graph.add_node("finish", finish_interactive if interactive else finish)
-    graph.add_edge("call_review", "finish")
+    if allow_revision:
+        async def decide_revision(state):
+            failures = _extract_actionable_review_failures(state.get("review_data"), state.get("review_status"))
+            if not failures:
+                return {"revision_decision": "finish"}
+            await hooks.check_control("model_calls", "review", None)
+            next_round = int(state.get("revision_round", 0) or 0) + 1
+            feedback = json.dumps(
+                {
+                    "revision_round": next_round,
+                    "fail_findings": failures,
+                    "unverified": (state.get("review_data") or {}).get("unverified") or [],
+                },
+                ensure_ascii=False,
+            )
+            if hasattr(hooks, "worker"):
+                from sqlalchemy import select
+
+                from .models import OperationRecord, RunEvent, ToolOperation
+                from .services import add_event, budget_limits, reserve_budget
+
+                async with hooks.serial:
+                    with hooks.worker.transaction() as db:
+                        run, _ = hooks._run(db, "review", allow_supplements=True)
+                        unsafe_tool = db.scalar(
+                            select(ToolOperation.id).where(
+                                ToolOperation.run_id == hooks.run_id,
+                                ToolOperation.status.in_(["dispatched", "running", "uncertain", "awaiting_approval"])
+                                | ToolOperation.slot_claimed.is_(True),
+                            ).limit(1)
+                        )
+                        unsafe_op = db.scalar(
+                            select(OperationRecord.operation_id).where(
+                                OperationRecord.run_id == hooks.run_id,
+                                OperationRecord.status.in_(["running", "uncertain"]),
+                            ).limit(1)
+                        )
+                        if unsafe_tool is not None or unsafe_op is not None:
+                            add_event(
+                                db,
+                                run,
+                                "agent.revision_skipped",
+                                {"reason": "UNSAFE_STATE", "revision_round": next_round},
+                            )
+                            return {"revision_decision": "finish"}
+                        existing_events = list(
+                            db.scalars(
+                                select(RunEvent).where(
+                                    RunEvent.run_id == hooks.run_id,
+                                    RunEvent.event_type == "agent.revision_triggered",
+                                )
+                            )
+                        )
+                        if any(
+                            isinstance(ev.payload, dict) and ev.payload.get("revision_round") == next_round
+                            for ev in existing_events
+                        ):
+                            return {
+                                "revision_round": next_round,
+                                "revision_decision": "revise",
+                                "revision_feedback": feedback,
+                            }
+                        limits = budget_limits(hooks.worker.settings)
+                        if not reserve_budget(db, hooks.run_id, "revisions", limits):
+                            add_event(
+                                db,
+                                run,
+                                "agent.revision_skipped",
+                                {"reason": "REVISION_BUDGET_EXHAUSTED", "revision_round": next_round},
+                            )
+                            return {"revision_decision": "finish"}
+                        add_event(
+                            db,
+                            run,
+                            "agent.revision_triggered",
+                            {"revision_round": next_round, "finding_count": len(failures)},
+                        )
+                        return {
+                            "revision_round": next_round,
+                            "revision_decision": "revise",
+                            "revision_feedback": feedback,
+                            "revision_history": [
+                                *state.get("revision_history", []),
+                                {"round": next_round, "findings": failures},
+                            ],
+                        }
+            if getattr(hooks, "has_uncertain_tools", False):
+                return {"revision_decision": "finish"}
+            max_rev = int(getattr(hooks, "max_revisions", 2))
+            if next_round > max_rev:
+                return {"revision_decision": "finish"}
+            return {
+                "revision_round": next_round,
+                "revision_decision": "revise",
+                "revision_feedback": feedback,
+                "revision_history": [
+                    *state.get("revision_history", []),
+                    {"round": next_round, "findings": failures},
+                ],
+            }
+
+        async def execute_revision(state, config):
+            await hooks.check_control("model_calls", "execute", None)
+            rev_round = int(state.get("revision_round", 1))
+            rev_task_id = f"revise-{rev_round}"
+            raw_messages = convert_to_messages(state["messages"])
+            additions = await hooks.stage_requirements("execute", raw_messages)
+            if collaboration:
+                from .m4_collaboration import protected_task_messages
+
+                messages = await protected_task_messages(hooks, [*raw_messages, *additions])
+            else:
+                messages = [*raw_messages, *additions]
+            prev_execution = (state.get("execution") or "")[:6000]
+            rev_instruction = (
+                f"{prompts['execute']}\n"
+                f"现在是第 {rev_round} 轮受控修订任务（task_id={rev_task_id}）。"
+                "请仅针对下列审查 FAIL 项进行精确修正，并在有工具时使用真实工具复测验证；禁止声称未执行的工具或测试成功。\n"
+                f"此前执行汇总：\n{prev_execution}\n\n"
+                f"审查反馈（JSON）：\n{state.get('revision_feedback', '{}')}"
+            )
+            messages.append(HumanMessage(id=f"omni-task:{rev_task_id}", content=rev_instruction))
+            if tools_enabled:
+                if collaboration:
+                    config = {
+                        **config,
+                        "configurable": {
+                            **config["configurable"],
+                            "omni_task_scope": {"id": rev_task_id, "write_paths": None},
+                        },
+                    }
+                messages = [
+                    AIMessage(content=answer_text(message.content), id=message.id)
+                    if isinstance(message, AIMessage)
+                    else message
+                    for message in messages
+                ]
+                messages = [
+                    message.model_copy(
+                        update={
+                            "id": message.id
+                            or "omni-executor:"
+                            + _digest(
+                                {
+                                    "task": rev_task_id,
+                                    "index": index,
+                                    "type": message.type,
+                                    "content": message.content,
+                                }
+                            )
+                        }
+                    )
+                    for index, message in enumerate(messages)
+                ]
+                result = await execution_agent.ainvoke({"messages": messages}, config)
+                if result.get("__interrupt__"):
+                    raise AgentBoundaryError("Nested graph did not propagate its interrupt")
+                content = require_complete_output(result["messages"][-1]).strip()
+            else:
+                _, content = await call_model("execute", messages, config, task_id=rev_task_id)
+            task_entry = {"task_id": rev_task_id, "step_id": rev_task_id, "content": content}
+            if collaboration:
+                from .review_evidence import persist_task_result, task_evidence_references
+
+                task_entry["operation_ids"] = await task_evidence_references(hooks, rev_task_id)
+                task_entry["result_artifact"] = await persist_task_result(hooks, rev_task_id, content)
+            updated_execution = f"{state.get('execution', '')}\n\n--- 第 {rev_round} 轮修订 ---\n{content}"
+            return {
+                "execution": updated_execution,
+                "messages": [*raw_messages, *additions, AIMessage(content=content)],
+                "stage_outputs": {**state.get("stage_outputs", {}), "execute": updated_execution},
+                "task_results": [task_entry],
+            }
+
+        graph.add_node("decide_revision", decide_revision)
+        graph.add_node("execute_revision", execute_revision)
+        graph.add_edge("call_review", "decide_revision")
+        graph.add_conditional_edges(
+            "decide_revision",
+            lambda state: "execute_revision" if state.get("revision_decision") == "revise" else "finish",
+            ["execute_revision", "finish"],
+        )
+        graph.add_edge("execute_revision", "prepare_review")
+    else:
+        graph.add_edge("call_review", "finish")
     graph.add_edge("finish", END)
     return compile_graph()

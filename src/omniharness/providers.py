@@ -60,7 +60,7 @@ class ProviderError(Exception):
 
 
 _ADAPTERS = {"openai", "openai-compatible", "anthropic", "gemini", "mock"}
-_PROBES = {"chat", "streaming", "tools", "structured", "summary_non_thinking"}
+_PROBES = {"chat", "streaming", "tools", "structured", "summary_non_thinking", "json_mode"}
 _ALLOWED = {
     "openai": {"temperature", "top_p", "seed", "reasoning_effort"},
     "openai-compatible": {"temperature", "top_p", "seed", "thinking"},
@@ -439,6 +439,9 @@ async def probe_model(config: RuntimeModelConfig, probes: list[str]) -> dict:
         if probe == "summary_non_thinking":
             results[probe] = await _probe_summary_non_thinking(config)
             continue
+        if probe == "json_mode":
+            results[probe] = await _probe_json_mode(config)
+            continue
         try:
             native_streaming = probe == "tools" and config.adapter_type == "openai-compatible"
             model = build_chat_model(config, native_streaming=True) if native_streaming else build_chat_model(config)
@@ -538,6 +541,93 @@ async def _probe_summary_non_thinking(config: RuntimeModelConfig) -> dict:
             result.update(status="supported", non_thinking_observed=True,
                           observation_basis="reported_zero_reasoning" if reasoning == 0 else "explicit_empty_reasoning")
         result["message"] = "已观察到非思考摘要。" if result["status"] == "supported" else "参数已接受，但非思考效果未确认或未生效。"
+    except Exception as exc:
+        result.update(status="error", message=_safe_error(exc).public_message)
+    return result
+
+
+def freeze_json_mode_capability(snapshot: dict, capability: dict | None) -> dict | None:
+    """Freeze bounded JSON-mode probe metadata only when bound to the exact snapshot."""
+    if (
+        not isinstance(capability, dict)
+        or type(capability.get("schema_version")) is not int
+        or capability.get("schema_version") != 1
+        or snapshot.get("adapter_type") not in {"openai", "openai-compatible"}
+        or not isinstance(capability.get("status"), str)
+        or capability["status"] not in {"supported", "unsupported", "unknown", "error"}
+        or capability.get("binding") != summary_capability_binding(snapshot)
+    ):
+        return None
+    frozen: dict[str, Any] = {key: capability[key] for key in ("schema_version", "status", "binding")}
+    if isinstance(capability.get("checked_at"), str):
+        frozen["checked_at"] = capability["checked_at"][:64]
+    if type(capability.get("model_calls")) is int and capability["model_calls"] in (0, 1):
+        frozen["model_calls"] = capability["model_calls"]
+    usage = capability.get("usage")
+    frozen["usage"] = (
+        {
+            key: usage[key]
+            for key in ("input_tokens", "output_tokens", "total_tokens")
+            if type(usage.get(key)) is int and usage[key] >= 0
+        }
+        if isinstance(usage, dict)
+        else None
+    )
+    return frozen
+
+
+async def _probe_json_mode(config: RuntimeModelConfig) -> dict:
+    """Test whether an OpenAI/compatible endpoint supports response_format=json_object."""
+    result: dict[str, Any] = {
+        "schema_version": 1,
+        "status": "unknown",
+        "binding": summary_capability_binding(config),
+        "checked_at": datetime.now(timezone.utc).isoformat(),
+        "model_calls": 0,
+        "usage": None,
+    }
+    if config.adapter_type not in {"openai", "openai-compatible"}:
+        return {**result, "status": "unsupported", "message": "JSON 模式探针仅适用于 OpenAI 及 OpenAI 兼容接口。"}
+    probe = replace(config, max_output_tokens=256, timeout_seconds=min(config.timeout_seconds, 60))
+    try:
+        model = build_chat_model(probe)
+        bound = model.bind(response_format={"type": "json_object"})
+        result["model_calls"] = 1
+        with importlib.import_module("langsmith").tracing_context(enabled=False):
+            async with asyncio.timeout(request_total_seconds(probe)):
+                message = await bound.ainvoke(
+                    [
+                        (
+                            "user",
+                            'Return a valid JSON object with a single boolean field ok set to true: {"ok": true}. Output JSON only.',
+                        )
+                    ]
+                )
+        usage = getattr(message, "usage_metadata", None) or {}
+        result["usage"] = (
+            {
+                key: usage[key]
+                for key in ("input_tokens", "output_tokens", "total_tokens")
+                if type(usage.get(key)) is int and usage[key] >= 0
+            }
+            or None
+        )
+        require_complete_output(message, require_finish=True)
+        text = extract_output(message).text.strip()
+        try:
+            parsed = json.loads(text)
+        except ValueError:
+            parsed = None
+        if isinstance(parsed, dict) and parsed.get("ok") is True:
+            result.update(
+                status="supported",
+                message="已通过原生 JSON 模式（response_format=json_object）校验。",
+            )
+        else:
+            result.update(
+                status="unsupported",
+                message="端点未返回符合要求的原始 JSON 对象。",
+            )
     except Exception as exc:
         result.update(status="error", message=_safe_error(exc).public_message)
     return result

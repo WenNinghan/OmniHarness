@@ -35,6 +35,7 @@ export const api = {
   workspaceEnabled: (id: string, enabled: boolean) => request<WorkspaceConfig>(`/workspaces/${id}`, json('PATCH', { enabled })),
   toolOperations: (id: string) => request<ToolOperation[]>(`/runs/${id}/tools`),
   reconcileTool: (id: string, fingerprint: string, requestId: string) => request<{ operation: ToolOperation; workspace_released: boolean }>(`/tool-operations/${id}/reconcile`, json('POST', { fingerprint, acknowledge_unverified: true, client_request_id: requestId })),
+  rollbackPatch: (id: string, fingerprint: string, expectedSha256: string, requestId: string) => request<{ operation: ToolOperation; rollback: { action: string; path: string; restored_sha256: string | null } }>(`/tool-operations/${encodeURIComponent(id)}/rollback`, json('POST', { fingerprint, expected_sha256: expectedSha256, acknowledge_manual_rollback: true, client_request_id: requestId })),
   approvals: (id: string) => request<ToolApproval[]>(`/runs/${id}/approvals`),
   decideApproval: (id: string, fingerprint: string, decision: 'approve' | 'reject') => request<ToolApproval>(`/approvals/${id}/decision`, json('POST', { fingerprint, decision, client_request_id: crypto.randomUUID() })),
   artifacts: (id: string) => request<ArtifactReference[]>(`/runs/${id}/artifacts`),

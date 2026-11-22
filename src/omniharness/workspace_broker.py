@@ -312,6 +312,10 @@ class OperationRequest(SnapshotRequest):
     operation_id: str = Field(pattern=r"^[A-Za-z0-9_-]{1,128}$")
 
 
+class RollbackRequest(OperationRequest):
+    expected_current_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+
 def create_broker_app(
     io: WorkspaceIO | NativeWorkspaceIO,
     *,
@@ -351,6 +355,9 @@ def create_broker_app(
             "version_conflict": 409,
             "policy_conflict": 409,
             "operation_exists": 409,
+            "already_rolled_back": 409,
+            "recovery_corrupt": 409,
+            "recovery_incomplete": 409,
             "file_busy": 409,
             "native_helper_unavailable": 503,
             "native_result_unknown": 409,
@@ -395,5 +402,9 @@ def create_broker_app(
     @app.post("/workspaces/{workspace_id}/operation-result")
     def operation_result(workspace_id: str, body: OperationRequest):
         return io.operation_result(workspace_id, instance_id, **body.model_dump())
+
+    @app.post("/workspaces/{workspace_id}/rollback")
+    def rollback(workspace_id: str, body: RollbackRequest):
+        return io.rollback(workspace_id, instance_id, **body.model_dump())
 
     return app

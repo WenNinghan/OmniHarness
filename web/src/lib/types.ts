@@ -1,5 +1,5 @@
 export type AdapterType = 'openai' | 'anthropic' | 'gemini' | 'openai-compatible' | 'mock'
-export type Probe = 'chat' | 'streaming' | 'tools' | 'structured' | 'summary_non_thinking'
+export type Probe = 'chat' | 'streaming' | 'tools' | 'structured' | 'summary_non_thinking' | 'json_mode'
 export type ProbeResult = { status: 'supported' | 'unsupported' | 'error' | 'unknown'; message: string; parameter_accepted?: boolean; non_thinking_observed?: boolean }
 export interface ContextConfiguration {
   schema_version?: number

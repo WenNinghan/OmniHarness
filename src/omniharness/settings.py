@@ -28,6 +28,8 @@ class Settings(BaseSettings):
     v10_preview: bool = False
     # Opt-in review failure handling frozen into newly created v4-v6 Runs.
     review_failure_policy: Literal["fail", "deliver_unreviewed"] = "fail"
+    # Opt-in bounded Review -> Revise loop frozen into newly created Runs.
+    review_revision_policy: Literal["off", "bounded"] = "off"
     workspace_broker_url: str = "http://127.0.0.1:19082"
     workspace_service_key_file: Path | None = Field(default=None, repr=False)
     sandbox_endpoint: str = "http://127.0.0.1:19080"

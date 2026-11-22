@@ -723,8 +723,9 @@ def broker_start():
         raise ValueError("An older production broker is still active; stop that owned helper before starting the new release")
     probe = '''import json,urllib.request,sys
 p=json.load(open(sys.argv[1])); key=open(p['service_key_file']).read().strip()
+opener=urllib.request.build_opener(urllib.request.ProxyHandler({}))
 r=urllib.request.Request('http://172.17.0.1:19098/health',headers={'Authorization':'Bearer '+key,'X-Omni-Instance':p['instance_id']})
-with urllib.request.urlopen(r,timeout=3) as response: value=json.load(response)
+with opener.open(r,timeout=3) as response: value=json.load(response)
 assert value['instance_id']==p['instance_id'] and value['status']=='ok'
 '''
     try:
@@ -734,19 +735,34 @@ assert value['instance_id']==p['instance_id'] and value['status']=='ok'
     except RuntimeError:
         pass
     wsl("python3", "-c", "import socket; s=socket.socket(); s.bind(('172.17.0.1',19098)); s.close()")
-    command = ["wsl.exe", "-d", DISTRO, "-u", "root", "--exec", "env", "OMNI_BROKER_PROFILE=" + profile,
-        LINUX + "/broker-venv/bin/python", "-m", "uvicorn", "omniharness.workspace_broker:create_deployment_app",
-        "--factory", "--app-dir", mapped(Path(prepared["broker_source"])), "--host", "172.17.0.1", "--port", "19098", "--no-access-log"]
-    with (PRIVATE / "logs/broker.stdout.log").open("ab") as out, (PRIVATE / "logs/broker.stderr.log").open("ab") as err:
-        process = subprocess.Popen(command, stdout=out, stderr=err, creationflags=subprocess.CREATE_NO_WINDOW)
-    write_json(PRIVATE / "broker-process.json", {"windows_pid": process.pid, "profile": profile})
-    for _ in range(30):
+    import shlex
+    (PRIVATE / "logs").mkdir(parents=True, exist_ok=True)
+    out_log = mapped(PRIVATE / "logs/broker.stdout.log")
+    err_log = mapped(PRIVATE / "logs/broker.stderr.log")
+    app_dir = mapped(Path(prepared["broker_source"]))
+    inner_cmd = " ".join(shlex.quote(part) for part in [
+        "env", "NO_PROXY=127.0.0.1,localhost,172.17.0.1", "OMNI_BROKER_PROFILE=" + profile,
+        LINUX + "/broker-venv/bin/python", "-m", "uvicorn",
+        "omniharness.workspace_broker:create_deployment_app",
+        "--factory", "--app-dir", app_dir, "--host", "172.17.0.1", "--port", "19098", "--no-access-log",
+    ])
+    wmi_cmd = f'wsl.exe -d {DISTRO} -u root -- sh -c "{inner_cmd} >>{shlex.quote(out_log)} 2>>{shlex.quote(err_log)}"'
+    ps_launch = subprocess.run(
+        ["powershell.exe", "-NoProfile", "-Command",
+         "param($c) $r = Invoke-CimMethod -ClassName Win32_Process -MethodName Create -Arguments @{ CommandLine = $c }; if ($r.ReturnValue -ne 0) { exit 1 }; Write-Output $r.ProcessId",
+         wmi_cmd],
+        capture_output=True, text=True, timeout=15, creationflags=subprocess.CREATE_NO_WINDOW,
+    )
+    if ps_launch.returncode != 0:
+        raise RuntimeError("Could not launch detached workspace broker via Win32_Process")
+    write_json(PRIVATE / "broker-process.json", {"windows_pid": int(ps_launch.stdout.strip()), "profile": profile})
+    for _ in range(80):
         try:
             wsl("python3", "-c", probe, profile, timeout=10)
             print("Production workspace broker is healthy; fixed native helper and independent key active.")
             return
         except RuntimeError:
-            time.sleep(.25)
+            time.sleep(.5)
     raise RuntimeError("Broker did not become healthy; inspect its private logs")
 
 

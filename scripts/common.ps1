@@ -41,7 +41,7 @@ function Invoke-OmniDocker {
         'OMNI_ENABLE_DEMO', 'OMNI_ENABLE_AGENT', 'OMNI_CHECKPOINT_SCHEMA',
         'OMNI_POSTGRES_PASSWORD', 'OMNI_UID', 'OMNI_GID', 'OMNI_IMAGE', 'OMNI_RELEASE_IMAGE',
         'OMNI_ENABLE_TOOLS', 'OMNI_INSTANCE_ID', 'OMNI_WORKSPACE_BROKER_URL', 'OMNI_SANDBOX_IMAGE', 'COMPOSE_PROFILES',
-        'OMNI_DATABASE_NAME', 'OMNI_DEPLOY_DATA_DIR', 'OMNI_DEPLOY_SECRET_DIR')
+        'OMNI_DATABASE_NAME', 'OMNI_DEPLOY_DATA_DIR', 'OMNI_DEPLOY_SECRET_DIR', 'OMNI_REVIEW_FAILURE_POLICY', 'OMNI_REVIEW_REVISION_POLICY')
     $entries = @()
     if ($previous) { $entries += @($previous -split ':' | Where-Object { $_ }) }
     foreach ($name in $names) {
@@ -82,19 +82,18 @@ function Start-OmniWslEngine {
     Invoke-OmniDocker -Arguments @('info', '--format', '{{.OSType}}') | Out-Null
     if ($LASTEXITCODE -eq 0) { return }
     [System.IO.Directory]::CreateDirectory($script:OmniRuntime) | Out-Null
-    $stamp = [DateTime]::UtcNow.ToString('yyyyMMdd-HHmmss-fff')
-    $outputLog = Join-Path $script:OmniRuntime "wsl-dockerd-$stamp.out.log"
-    $errorLog = Join-Path $script:OmniRuntime "wsl-dockerd-$stamp.err.log"
-    $process = Start-Process -FilePath (Get-Command wsl.exe).Source -ArgumentList @('-d', $env:OMNI_WSL_DISTRO, '-u', 'root', '--exec', 'dockerd', '--host=unix:///var/run/docker.sock') -WindowStyle Hidden -RedirectStandardOutput $outputLog -RedirectStandardError $errorLog -PassThru
+    $wslExe = (Get-Command wsl.exe).Source
+    $daemonCmd = "`"$wslExe`" -d $env:OMNI_WSL_DISTRO -u root -- sh -c `"if ! docker info >/dev/null 2>&1; then exec dockerd --host=unix:///var/run/docker.sock >/var/log/omniharness-dockerd.log 2>&1; else exec sleep infinity; fi`""
+    $spawned = Invoke-CimMethod -ClassName Win32_Process -MethodName Create -Arguments @{ CommandLine = $daemonCmd }
+    if ($spawned.ReturnValue -ne 0) { throw "Could not launch detached WSL Docker daemon (WMI code $($spawned.ReturnValue))." }
     $ready = $false
     for ($attempt = 0; $attempt -lt 40; $attempt++) {
-        Start-Sleep -Milliseconds 250
+        Start-Sleep -Milliseconds 300
         Invoke-OmniDocker -Arguments @('info', '--format', '{{.OSType}}') | Out-Null
         if ($LASTEXITCODE -eq 0) { $ready = $true; break }
-        if ($process.HasExited) { break }
     }
-    if (-not $ready) { throw "WSL Docker engine did not become ready. Inspect $errorLog." }
-    Write-Host "WSL Docker engine started in $env:OMNI_WSL_DISTRO (process $($process.Id))."
+    if (-not $ready) { throw 'WSL Docker engine did not become ready. Inspect /var/log/omniharness-dockerd.log inside WSL.' }
+    Write-Host "WSL Docker engine started in $env:OMNI_WSL_DISTRO (process $($spawned.ProcessId))."
 }
 
 function Assert-OmniDocker {
@@ -237,9 +236,20 @@ function Get-OmniComposeContext {
         if (-not $labelDir -or -not $labelConfig -or -not $labelProject -or -not $labelService) { throw 'A same-name Compose container lacks ownership labels; refusing to continue.' }
         if ($labelProject -cne $project) { throw 'A same-name container has a conflicting Compose project label; refusing to continue.' }
         $actualDir = Get-OmniPhysicalPath (ConvertFrom-OmniLabelPath $labelDir)
-        $actualConfig = Get-OmniPhysicalPath (ConvertFrom-OmniLabelPath $labelConfig)
+        $configEntries = @($labelConfig -split ',' | Where-Object { $_ })
+        if ($configEntries.Count -lt 1) { throw 'Invalid Compose configuration label; refusing to continue.' }
+        $actualConfig = Get-OmniPhysicalPath (ConvertFrom-OmniLabelPath $configEntries[0])
+        $overlaysOwned = $true
+        foreach ($extraEntry in ($configEntries | Select-Object -Skip 1)) {
+            $extraPhysical = Get-OmniPhysicalPath (ConvertFrom-OmniLabelPath $extraEntry)
+            if (-not $extraPhysical.StartsWith(($physicalRoot + '\'), [StringComparison]::OrdinalIgnoreCase)) {
+                $overlaysOwned = $false
+                break
+            }
+        }
         if (-not [String]::Equals($actualDir, $physicalRoot, [StringComparison]::OrdinalIgnoreCase) -or
-            -not [String]::Equals($actualConfig, $physicalConfig, [StringComparison]::OrdinalIgnoreCase)) {
+            -not [String]::Equals($actualConfig, $physicalConfig, [StringComparison]::OrdinalIgnoreCase) -or
+            -not $overlaysOwned) {
             throw 'The Compose project name is already owned by a different directory or configuration. Choose a different COMPOSE_PROJECT_NAME.'
         }
         if ($labelService -in @('api', 'worker', 'init')) {

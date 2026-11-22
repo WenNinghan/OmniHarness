@@ -83,11 +83,23 @@ def supports_stage_json_mode(model_snapshot: dict | None) -> bool:
     if not isinstance(model_snapshot, dict):
         return False
     params = model_snapshot.get("parameters")
-    if isinstance(params, dict) and params.get("omni_stage_json_mode") is True:
-        return True
+    if isinstance(params, dict) and "omni_stage_json_mode" in params:
+        if params["omni_stage_json_mode"] is True:
+            return True
+        if params["omni_stage_json_mode"] is False:
+            return False
     caps = model_snapshot.get("capabilities")
     if isinstance(caps, dict):
         json_cap = caps.get("json_mode")
         if isinstance(json_cap, dict) and json_cap.get("status") == "supported":
+            if "binding" in json_cap:
+                binding = json_cap.get("binding")
+                if not isinstance(binding, str) or not binding:
+                    return False
+                if all(key in model_snapshot for key in ("id", "adapter_type", "model_name")):
+                    from .providers import summary_capability_binding
+
+                    if binding != summary_capability_binding(model_snapshot):
+                        return False
             return True
     return False
