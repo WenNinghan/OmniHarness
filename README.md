@@ -43,11 +43,11 @@ OmniHarness 的出发点，是把这些能力放在一个用户能够理解和�
 
 | 能力 | 当前实现与使用边界 |
 | --- | --- |
-| **接入自己的模型** | 提供 OpenAI、Anthropic、Gemini 和 OpenAI-compatible 适配器；具体模型和工具调用能力以实际连接测试为准。项目不提供模型账户或 API Key。 |
-| **从对话走向任务** | 在工作台中发起聊天或 Agent 任务；模型、工作区授权和上下文配置在任务开始时固定；支持按阶段绑定模型与无写冲突子任务受控并行。Agent 和工具需要分别启用并通过就绪检查。 |
-| **与项目文件协作** | 登记并授权工作区后，Agent 可以读取、搜索及通过带版本校验的补丁修改允许的文件；并发修改会触发冲突检查。 |
-| **在沙箱中运行命令** | 命令在过滤后的项目快照中执行；沙箱内的文件更改不会自动写回原项目；复合 Shell 命令会附加退出码覆盖范围元数据。工具使用需要完成独立 broker 与沙箱控制器配置。 |
-| **查看执行过程** | 任务、事件、工具结果、流完整性诊断与完整日志工件会被保存；支持可选的后置审查失败降级交付（`OMNI_REVIEW_FAILURE_POLICY=deliver_unreviewed`）并显式区分未审查状态。 |
+| **接入自己的模型** | 提供 OpenAI、Anthropic、Gemini 和 OpenAI-compatible 适配器；支持单项 `json_mode` 能力探测（OpenAI / OpenAI-compatible）与显式阶段开关；具体模型和工具调用能力以实际连接测试为准。项目不提供模型账户或 API Key。 |
+| **从对话走向任务** | 在工作台中发起聊天或 Agent 任务；模型、工作区授权和上下文配置在任务开始时固定；支持按阶段绑定模型、无写冲突子任务受控并行，以及默认关闭的可选受限修订闭环（`OMNI_REVIEW_REVISION_POLICY=bounded`）。Agent 和工具需要分别启用并通过就绪检查。 |
+| **与项目文件协作** | 登记并授权工作区后，Agent 可以读取、搜索及通过带版本校验的补丁修改允许的文件；并发修改会触发冲突检查；任务结束后支持对无外部漂移的单个补丁执行受控安全人工回滚。 |
+| **在沙箱中运行命令** | 命令在过滤后的项目快照中执行；沙箱内的文件更改不会自动写回原项目；复合 Shell 命令会附加退出码覆盖范围元数据并在前端展示警告。工具使用需要完成独立 broker 与沙箱控制器配置。 |
+| **查看执行过程** | 任务、事件、统一 Diff 补丁视图、阶段耗时时间线、工具结果、流完整性诊断与完整日志工件会被保存；支持可选的后置审查失败降级交付（`OMNI_REVIEW_FAILURE_POLICY=deliver_unreviewed`）并显式区分未审查状态。 |
 | **管理上下文** | 支持按策略整理历史、摘要和工具结果；记录中的输入估算与供应商报告的缓存用量分开，缺失的信息保持未知。 |
 | **引入受信任工具** | 支持受配置约束的 MCP HTTP 服务和插件；外部工具按本地配置与审批边界使用。 |
 
@@ -124,12 +124,12 @@ SQLite 入口用于聊天开发预览，**不支持 Agent 执行**。SQLite 数�
 
 - 当前处于 **M4 开发预览阶段**。不同模型、供应商、操作系统及部署方式需要分别验证，实际行为以各自测试记录为准。
 - 已有 V3 上下文策略、运行观察、复合命令退出码覆盖提示和有限的命令退出码矛盾核对；提示仅覆盖可以明确关联工具工件的特定情况，**不构成通用事实核查，也不能消除所有幻觉**。
-- 结果未知的外部请求不能安全地一律重试；取消也不保证远端请求未发生，已经修改的文件不会自动回滚。
-- 可选的后置审查降级开关（`OMNI_REVIEW_FAILURE_POLICY=deliver_unreviewed`，默认关闭）仅在执行产物已落盘且无未知工具操作时保留已完成产物并标注审查未完成，不等同于独立审查通过。
+- 结果未知的外部请求不能安全地一律重试；取消也不保证远端请求未发生，已经修改的文件不会自动回滚；已实现的手动单补丁回滚仅在终态任务、无活跃工作区租约且目标文件仍匹配 `after_sha256` 时可执行。
+- 可选的后置审查降级开关（`OMNI_REVIEW_FAILURE_POLICY=deliver_unreviewed`，默认关闭）仅在执行产物已落盘且无未知工具操作时保留已完成产物并标注审查未完成，可选的受限修订开关（`OMNI_REVIEW_REVISION_POLICY=bounded`，默认关闭）在预算与安全边界内允许有限次 `Review -> Revise` 返工；两者均不等同于无条件保证独立审查通过。
 - 独立沙箱创建与回收服务已有源码和隔离验证，默认不自动启用；上线仍需要按实际部署环境完成存储、备份、恢复和故障验收。
 - 工具沙箱基于容器，不能视为对恶意本机管理员或所有宿主风险的完整隔离。工作区、插件、MCP 服务和模型供应商都应按自身信任边界选择。
 - 当前测试记录包含成功案例，也包含中等开发任务未在预算内完成、测试题口径需澄清等发现；单次任务不足以证明 V3 在成功率、缓存或成本上优于其他策略。
-- 长上下文、请求恢复与原生流式审查正在持续验证中；真实审查仍有长响应未知等上游待观察项，详见 [原生流式审查记录](docs/validation/2026-11-16-native-review.md)、[流诊断与审查降级说明](docs/validation/2026-11-18-review-degradation-and-stream-diagnostics.md) 与 [协作契约与多路并行说明](docs/validation/2026-11-18-collaboration-resilience-and-hygiene.md)。
+- 长上下文、请求恢复、原生流式审查、离线 20 题确定性评测评分器（`scripts/m5_evaluate.py`）与诊断自愈选项（`scripts/doctor.ps1 -Fix`）正在持续验证中；真实模型对照评测与长响应未知项仍需在明确预算下继续观察，详见 [原生流式审查记录](docs/validation/2026-11-16-native-review.md)、[流诊断与审查降级说明](docs/validation/2026-11-18-review-degradation-and-stream-diagnostics.md)、[协作契约与多路并行说明](docs/validation/2026-11-18-collaboration-resilience-and-hygiene.md) 与 [JSON 模式探测、受限修订、补丁回滚与评测引擎验证](docs/validation/2026-11-23-json-probe-revision-rollback-and-g4-evaluator.md)。
 - 完整的研究工作流、自动修订闭环和跨项目长期记忆仍需后续建设；项目不提供模型中转或保证供应商可用。
 
 ## 开发与验证
@@ -166,6 +166,7 @@ PostgreSQL 集成测试需要显式设置专用的 `OMNI_TEST_POSTGRES_URL`，�
 - [长上下文、原生流式与请求恢复验证](docs/validation/2026-11-16-native-review.md)
 - [流完整性细分诊断与审查降级交付验证](docs/validation/2026-11-18-review-degradation-and-stream-diagnostics.md)
 - [多阶段协作契约、无冲突多路并行与工程治理验证](docs/validation/2026-11-18-collaboration-resilience-and-hygiene.md)
+- [JSON 模式探测、受限修订、补丁回滚与评测引擎验证](docs/validation/2026-11-23-json-probe-revision-rollback-and-g4-evaluator.md)
 
 ## 致谢
 

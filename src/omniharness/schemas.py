@@ -57,9 +57,18 @@ class ModelConfigRequest(StrictModel):
     @field_validator("parameters")
     @classmethod
     def parameter_allowlist(cls, value):
-        from .request_policy import REQUEST_POLICY_KEY, parse_request_policy
+        from .request_policy import REQUEST_POLICY_KEY, STAGE_JSON_MODE_KEY, parse_request_policy
 
-        allowed = {"temperature", "top_p", "reasoning_effort", "seed", "top_k", "thinking", REQUEST_POLICY_KEY}
+        allowed = {
+            "temperature",
+            "top_p",
+            "reasoning_effort",
+            "seed",
+            "top_k",
+            "thinking",
+            REQUEST_POLICY_KEY,
+            STAGE_JSON_MODE_KEY,
+        }
         if not set(value).issubset(allowed):
             raise ValueError("unsupported or reserved provider parameters")
         parse_request_policy(value)
@@ -73,8 +82,8 @@ class ModelConfigRequest(StrictModel):
 
 
 class ProbeRequest(StrictModel):
-    probes: list[Literal["chat", "streaming", "tools", "structured", "summary_non_thinking"]] = Field(
-        default_factory=lambda: ["chat", "streaming", "tools", "structured"], min_length=1, max_length=5
+    probes: list[Literal["chat", "streaming", "tools", "structured", "summary_non_thinking", "json_mode"]] = Field(
+        default_factory=lambda: ["chat", "streaming", "tools", "structured"], min_length=1, max_length=6
     )
 
 

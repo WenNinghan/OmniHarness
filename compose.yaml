@@ -20,6 +20,8 @@ x-app-environment: &app-environment
   OMNI_SANDBOX_SNAPSHOT_ROOT: /var/lib/omniharness-m4-production/snapshots
   OMNI_SANDBOX_MAX_COMMAND_SECONDS: "600"
   OMNI_CHECKPOINT_SCHEMA: ${OMNI_CHECKPOINT_SCHEMA:-omniharness_checkpoints}
+  OMNI_REVIEW_FAILURE_POLICY: ${OMNI_REVIEW_FAILURE_POLICY:-fail}
+  OMNI_REVIEW_REVISION_POLICY: ${OMNI_REVIEW_REVISION_POLICY:-off}
 
 x-application: &application
   image: ${OMNI_RELEASE_IMAGE:-${OMNI_IMAGE:-omniharness:local}}

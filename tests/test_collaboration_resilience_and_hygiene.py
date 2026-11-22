@@ -79,11 +79,38 @@ def test_ai_routing_parser_accepts_fenced_json_with_preamble_and_blocks_secret_l
 
 
 def test_supports_stage_json_mode_requires_explicit_capability_or_parameter():
+    from omniharness.providers import (
+        ProviderError,
+        RuntimeModelConfig,
+        summary_capability_binding,
+        validate_config,
+    )
+    from omniharness.request_policy import provider_parameters
+
     assert supports_stage_json_mode(None) is False
     assert supports_stage_json_mode({"parameters": {}, "capabilities": {}}) is False
     assert supports_stage_json_mode({"capabilities": {"json_mode": {"status": "unsupported"}}}) is False
     assert supports_stage_json_mode({"capabilities": {"json_mode": {"status": "supported"}}}) is True
     assert supports_stage_json_mode({"parameters": {"omni_stage_json_mode": True}}) is True
+
+    base_cfg = RuntimeModelConfig(
+        id="m1", adapter_type="openai-compatible", model_name="demo",
+        base_url="http://localhost:11434/v1", parameters={"temperature": 0.2},
+    )
+    json_cfg = RuntimeModelConfig(
+        id="m1", adapter_type="openai-compatible", model_name="demo",
+        base_url="http://localhost:11434/v1", parameters={"temperature": 0.2, "omni_stage_json_mode": True},
+    )
+    assert validate_config(json_cfg) == {"temperature": 0.2}
+    assert provider_parameters(json_cfg.parameters) == {"temperature": 0.2}
+    assert summary_capability_binding(base_cfg) == summary_capability_binding(json_cfg)
+
+    bad_cfg = RuntimeModelConfig(
+        id="m1", adapter_type="openai-compatible", model_name="demo",
+        base_url="http://localhost:11434/v1", parameters={"omni_stage_json_mode": "yes"},
+    )
+    with pytest.raises(ProviderError):
+        validate_config(bad_cfg)
 
 
 def test_stage_graph_binds_json_object_response_format_only_for_structured_stages(environment, tmp_path):

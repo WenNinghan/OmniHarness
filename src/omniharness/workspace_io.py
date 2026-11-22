@@ -566,6 +566,100 @@ class WorkspaceIO:
                 "current_sha256": current_sha256, "matches_expected_result": current_sha256 == record["sha256"],
                 "state": "completed" if recorded_completed else "uncertain"}
 
+    def rollback(
+        self,
+        workspace_id: str,
+        instance_id: str,
+        policy_version: int,
+        operation_id: str,
+        run_id: str,
+        expected_current_sha256: str,
+    ) -> dict:
+        """Manually restore a completed patch to before.bin after verifying current SHA256."""
+        grant = self._grant(workspace_id, instance_id, policy_version)
+        _identifier(operation_id)
+        _identifier(run_id)
+        if not isinstance(expected_current_sha256, str) or not re.fullmatch(r"[0-9a-f]{64}", expected_current_sha256):
+            _fail("invalid_version", "Expected current version must be a SHA-256 digest.")
+        with self._lock(workspace_id):
+            record_dir = self.storage_root / "recovery" / operation_id
+            try:
+                record = json.loads((record_dir / "prepared.json").read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                _fail("not_found", "No complete recovery record exists for this operation.")
+            if (
+                record.get("workspace_id"),
+                record.get("instance_id"),
+                record.get("run_id"),
+                record.get("policy_version"),
+            ) != (workspace_id, instance_id, run_id, policy_version):
+                _fail("not_found", "No recovery record exists in this run and workspace.")
+            try:
+                completed = json.loads((record_dir / "result.json").read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                completed = None
+            if completed != {**record, "state": "completed"}:
+                _fail("recovery_incomplete", "Patch operation is not recorded as completed; cannot roll back.")
+            rollback_path = record_dir / "rollback.json"
+            if rollback_path.exists():
+                _fail("already_rolled_back", "This patch operation has already been rolled back.")
+            if expected_current_sha256 != record.get("sha256"):
+                _fail("version_conflict", "Expected file hash does not match the recorded patch output.")
+            target = self._authorize(grant, record["path"], write=True)
+            self._authorize(grant, record["path"])
+            try:
+                before_bytes = (record_dir / "before.bin").read_bytes()
+            except OSError:
+                _fail("recovery_corrupt", "Recovery backup file is missing or unreadable.")
+            if record.get("before_sha256") is not None:
+                if _digest(before_bytes) != record["before_sha256"]:
+                    _fail("recovery_corrupt", "Recovery backup digest does not match.")
+                with self._parents(target, grant):
+                    with self._file(target, write=True, grant=grant) as stream:
+                        current = stream.read(self.max_file_bytes + 1)
+                        if len(current) > self.max_file_bytes or _digest(current) != record["sha256"]:
+                            _fail(
+                                "version_conflict",
+                                "File has changed since this patch was applied; refusing to overwrite newer changes.",
+                            )
+                        self._write(stream, before_bytes)
+                action = "restored"
+                restored_sha256 = record["before_sha256"]
+            else:
+                if before_bytes != b"":
+                    _fail("recovery_corrupt", "Recovery backup for created file is invalid.")
+                # Verify and close the handle before unlinking (required on Windows).
+                with self._file(target, write=False, grant=grant) as stream:
+                    current = stream.read(self.max_file_bytes + 1)
+                    if len(current) > self.max_file_bytes or _digest(current) != record["sha256"]:
+                        _fail(
+                            "version_conflict",
+                            "File has changed since this patch was applied; refusing to delete newer changes.",
+                        )
+                with self._parents(target, grant) as parent_fd:
+                    if os.name == "nt":
+                        if target.is_symlink() or not target.is_file():
+                            _fail("unsafe_link", "Target is no longer a regular file.")
+                        os.unlink(target)
+                    else:
+                        os.unlink(target.name, dir_fd=parent_fd)
+                action = "deleted_created_file"
+                restored_sha256 = None
+            receipt = {
+                "workspace_id": workspace_id,
+                "instance_id": instance_id,
+                "policy_version": policy_version,
+                "run_id": run_id,
+                "operation_id": operation_id,
+                "path": record["path"],
+                "rolled_back_from_sha256": record["sha256"],
+                "restored_sha256": restored_sha256,
+                "action": action,
+                "state": "rolled_back",
+            }
+            self._save_json(rollback_path, receipt)
+            return receipt
+
     def snapshot(self, workspace_id: str, instance_id: str, policy_version: int, run_id: str) -> dict:
         grant = self._grant(workspace_id, instance_id, policy_version)
         _identifier(run_id)
@@ -679,6 +773,25 @@ class NativeWorkspaceIO:
         return self._call("operation_result", workspace_id, instance_id, policy_version,
                           operation_id=operation_id, run_id=run_id)
 
+    def rollback(
+        self,
+        workspace_id: str,
+        instance_id: str,
+        policy_version: int,
+        operation_id: str,
+        run_id: str,
+        expected_current_sha256: str,
+    ) -> dict:
+        return self._call(
+            "rollback",
+            workspace_id,
+            instance_id,
+            policy_version,
+            operation_id=operation_id,
+            run_id=run_id,
+            expected_current_sha256=expected_current_sha256,
+        )
+
     def snapshot(self, workspace_id, instance_id, policy_version, run_id):
         result = self._call("snapshot", workspace_id, instance_id, policy_version, run_id=run_id)
         # Trust the pinned staging root, not a path returned by the subprocess.
@@ -720,7 +833,7 @@ def _native_rpc() -> None:
         _fail("unsupported", "The native helper must run on Windows.")
     request = json.loads(sys.stdin.buffer.read(32 * 1024 * 1024).decode("utf-8"))
     method = request["method"]
-    if method not in ("probe", "read", "list", "search", "patch", "snapshot", "operation_result"):
+    if method not in ("probe", "read", "list", "search", "patch", "snapshot", "operation_result", "rollback"):
         _fail("unknown_method", "This helper only supports workspace file operations.")
     grant = WorkspaceGrant(**request["grant"])
     core = WorkspaceIO(

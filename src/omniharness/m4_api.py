@@ -7,6 +7,7 @@ from sqlalchemy import select
 
 from .artifacts import ArtifactStore
 from .m4_reconciliation import ReconciliationRequest, reconcile_tool
+from .m4_rollback import RollbackPatchRequest, rollback_patch
 from .m4_services import (
     approval_output,
     artifact_output,
@@ -156,6 +157,10 @@ def create_tools_router(factory, settings):
     @router.post("/tool-operations/{identity}/reconcile")
     async def reconcile(identity: str, body: ReconciliationRequest):
         return await reconcile_tool(factory, settings, identity, body)
+
+    @router.post("/tool-operations/{identity}/rollback")
+    async def rollback(identity: str, body: RollbackPatchRequest):
+        return await rollback_patch(factory, settings, identity, body)
 
     @router.get("/runs/{identity}/artifacts")
     def artifacts(identity: str):

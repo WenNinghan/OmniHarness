@@ -16,7 +16,7 @@ def read_service_key(path: Path | None) -> str:
 
 
 class BrokerClient:
-    ACTIONS = frozenset({"probe", "read", "list", "search", "patch", "snapshot", "operation-result"})
+    ACTIONS = frozenset({"probe", "read", "list", "search", "patch", "snapshot", "operation-result", "rollback"})
 
     def __init__(self, settings):
         self.url = settings.workspace_broker_url.rstrip("/")
@@ -46,6 +46,7 @@ class BrokerClient:
                 if response.status_code != 200:
                     # Broker codes are static; do not expose arbitrary upstream text.
                     known = {"version_conflict", "policy_conflict", "file_busy", "operation_exists",
+                             "already_rolled_back", "recovery_corrupt", "recovery_incomplete",
                              "native_result_unknown", "unsafe_link", "path_denied", "workspace_disabled",
                              "workspace_identity_changed", "write_lease_required", "file_too_large", "not_text"}
                     code = response.json().get("error", {}).get("code")

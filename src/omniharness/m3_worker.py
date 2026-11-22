@@ -808,7 +808,8 @@ async def run_agent(worker, identity, *, model_factory=None):
                                              max_context_characters=worker.settings.max_chat_characters,
                                              workflow_version=version, execution_agent=execution_agent,
                                              execution_strategy=snapshot["agent"].get("strategy", "staged"),
-                                             review_failure_policy=snapshot["agent"].get("review_failure_policy", "fail"))
+                                             review_failure_policy=snapshot["agent"].get("review_failure_policy", "fail"),
+                                             review_revision_policy=snapshot["agent"].get("review_revision_policy", "off"))
                 return build_controlled_agent(coordinator=roles["think"],
                                               subagents=[roles["plan"], roles["execute"], roles["review"]],
                                               hooks=host, checkpointer=saver, require_durable_ids=True,

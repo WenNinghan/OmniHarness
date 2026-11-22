@@ -4,6 +4,7 @@ import { api } from '../lib/api.ts'
 import type { ArtifactReference, Run, ToolApproval, ToolOperation } from '../lib/types.ts'
 import { terminalStatuses } from '../lib/types.ts'
 import { isUndispatchedSchemaFailure } from '../lib/tool-activity-state.ts'
+import { compoundMaskingWarning, extractPatchDiff, parseUnifiedDiff } from '../lib/diff-view.ts'
 import { Badge, Button } from './ui.tsx'
 import './WorkspaceTools.css'
 
@@ -19,8 +20,10 @@ export function ToolActivity({ run }: { run: Run }) {
   const [busy, setBusy] = useState<string | null>(null)
   const [revision, setRevision] = useState(0)
   const [acknowledged, setAcknowledged] = useState<Record<string, boolean>>({})
+  const [rollbackAck, setRollbackAck] = useState<Record<string, boolean>>({})
   const [notice, setNotice] = useState('')
   const reconciliationIds = useRef<Record<string, string>>({})
+  const rollbackIds = useRef<Record<string, string>>({})
   const [preview, setPreview] = useState<{ id: string; name: string; content: string; next: number; size: number } | null>(null)
   useEffect(() => {
     let alive = true
@@ -61,6 +64,16 @@ export function ToolActivity({ run }: { run: Run }) {
     } catch (reason) { setError(reason instanceof Error ? reason.message : '核对未完成，工作区仍保持占用') }
     finally { setBusy(null) }
   }
+  async function rollback(operation: ToolOperation, afterSha: string) {
+    setBusy(operation.id); setError(''); setNotice('')
+    const requestId = rollbackIds.current[operation.id] ??= crypto.randomUUID()
+    try {
+      const result = await api.rollbackPatch(operation.id, operation.binding_fingerprint, afterSha, requestId)
+      setNotice(result.rollback.action === 'deleted_created_file' ? '补丁已安全回滚：已删除该补丁新建的文件。' : '补丁已安全回滚：文件已恢复至补丁前版本。')
+      setRevision(value => value + 1)
+    } catch (reason) { setError(reason instanceof Error ? reason.message : '回滚未完成，原文件未被覆盖。') }
+    finally { setBusy(null) }
+  }
   const pending = approvals.filter(item => item.status === 'pending')
   if (!run.workspace && !artifacts.length && !error) return null
   return <section className="detail-section tool-activity">
@@ -78,10 +91,46 @@ export function ToolActivity({ run }: { run: Run }) {
     </article>)}
     {run.workspace && <div className="tool-card-heading tool-list-heading"><Terminal size={16} /><strong>实际工具调用</strong><span>{loaded ? operations.length : '…'}</span></div>}
     {run.workspace && !operations.length && !error && <p className="tool-caption">{!loaded ? '正在读取工具记录…' : terminalStatuses.has(run.status) ? '本次任务未记录工具调用。' : '目前尚未记录工具调用。'}</p>}
-    {operations.map(operation => <details className="tool-record" key={operation.id}>
-      <summary><span>{names[operation.tool_name] ?? operation.tool_name}</span><Badge tone={operation.error_code || ['failed', 'uncertain'].includes(operation.status) ? 'red' : operation.status === 'completed' ? 'green' : 'neutral'}>{isUndispatchedSchemaFailure(operation) ? '参数无效 · 未执行' : operation.status === 'reconciled' ? '已核对 · 未验证' : operation.status === 'completed' && operation.error_code ? '已执行 · 返回错误' : states[operation.status] ?? operation.status}</Badge></summary>
-      <pre>{JSON.stringify(operation.parameters, null, 2)}</pre>
-      {operation.result && <><p className="tool-caption">实际结果</p><pre>{JSON.stringify(operation.result, null, 2)}</pre></>}
+    {operations.map(operation => {
+      const patchInfo = extractPatchDiff(operation)
+      const parsedDiff = patchInfo?.diff !== null && patchInfo?.diff !== undefined ? parseUnifiedDiff(patchInfo.diff) : null
+      const maskingWarning = compoundMaskingWarning(operation)
+      return <details className="tool-record" key={operation.id}>
+      <summary>
+        <span>{names[operation.tool_name] ?? operation.tool_name}{patchInfo?.path ? ` · ${patchInfo.path}` : ''}</span>
+        {parsedDiff && (parsedDiff.additions > 0 || parsedDiff.deletions > 0) && <Badge tone="neutral">{`+${parsedDiff.additions} / -${parsedDiff.deletions}`}</Badge>}
+        {patchInfo?.rollback && <Badge tone="amber">已人工回滚</Badge>}
+        {maskingWarning && <Badge tone="amber">仅末段退出码</Badge>}
+        <Badge tone={operation.error_code || ['failed', 'uncertain'].includes(operation.status) ? 'red' : operation.status === 'completed' ? 'green' : 'neutral'}>{isUndispatchedSchemaFailure(operation) ? '参数无效 · 未执行' : operation.status === 'reconciled' ? '已核对 · 未验证' : operation.status === 'completed' && operation.error_code ? '已执行 · 返回错误' : states[operation.status] ?? operation.status}</Badge>
+      </summary>
+      {maskingWarning && <div className="tool-warning" role="status">{maskingWarning}</div>}
+      {patchInfo ? <>
+        <p className="tool-caption">
+          文件版本：{patchInfo.beforeSha ? <code>{patchInfo.beforeSha.slice(0, 12)}</code> : '新建文件'} → {patchInfo.afterSha ? <code>{patchInfo.afterSha.slice(0, 12)}</code> : '未知'}
+          {patchInfo.recoveryId && <> · 恢复记录 <code>{patchInfo.recoveryId.slice(0, 12)}</code></>}
+        </p>
+        {parsedDiff && parsedDiff.lines.length > 0 && <>
+          <div className="patch-diff" aria-label="补丁 Diff">
+            {parsedDiff.lines.map((line, index) => <div key={index} className={`diff-line diff-${line.kind}`}>{line.text || ' '}</div>)}
+          </div>
+          {parsedDiff.truncated && <p className="tool-caption">Diff 仅显示前 {parsedDiff.lines.length} / {parsedDiff.totalLines} 行；完整内容见下方已保存工件。</p>}
+        </>}
+        {patchInfo.truncatedInResult && !parsedDiff && <p className="tool-caption">补丁回执过大已截断，请在下方「保存的工件」中查看完整 workspace_patch.json。</p>}
+        {patchInfo.diff === '' && <p className="tool-caption">文件内容未发生变化（空 Diff）。</p>}
+        {patchInfo.rollback ? <p className="tool-caption">人工回滚状态：{patchInfo.rollback.action === 'deleted_created_file' ? '已删除新建文件' : `已恢复原版本 ${patchInfo.rollback.restoredSha?.slice(0, 12) ?? ''}`}</p>
+          : operation.status === 'completed' && terminalStatuses.has(run.status) && patchInfo.afterSha && <div className="reconciliation-box">
+            <label className="workspace-check"><input type="checkbox" checked={rollbackAck[operation.id] ?? false} onChange={event => setRollbackAck(value => ({ ...value, [operation.id]: event.target.checked }))} /><span>我确认要回滚此补丁；若文件之后被修改，系统会拒绝覆盖。</span></label>
+            <Button size="small" disabled={!rollbackAck[operation.id] || Boolean(busy)} onClick={() => void rollback(operation, patchInfo.afterSha!)}>安全回滚此补丁</Button>
+          </div>}
+        <details className="tool-raw">
+          <summary>原始参数与回执 JSON</summary>
+          <pre>{JSON.stringify(operation.parameters, null, 2)}</pre>
+          {operation.result && <pre>{JSON.stringify(operation.result, null, 2)}</pre>}
+        </details>
+      </> : <>
+        <pre>{JSON.stringify(operation.parameters, null, 2)}</pre>
+        {operation.result && <><p className="tool-caption">实际结果</p><pre>{JSON.stringify(operation.result, null, 2)}</pre></>}
+      </>}
       {operation.snapshot_id && <small>测试快照：{operation.snapshot_id}</small>}
       {operation.error_code && <p className="tools-error">{operation.error_code}</p>}
       {['uncertain', 'running', 'dispatched'].includes(operation.status) && terminalStatuses.has(run.status) && ['workspace_patch', 'run_command'].includes(operation.tool_name) && <div className="reconciliation-box">
@@ -89,7 +138,8 @@ export function ToolActivity({ run }: { run: Run }) {
         <p className="tool-caption">只有确认原沙箱已回收，或补丁回执与当前文件版本一致，才会释放该操作的占用。</p>
         <Button size="small" disabled={!acknowledged[operation.id] || Boolean(busy)} onClick={() => void reconcile(operation)}>核对并释放占用</Button>
       </div>}
-    </details>)}
+    </details>
+    })}
     {approvals.some(item => item.status !== 'pending') && <details className="tool-record"><summary><ShieldCheck size={15} />审批记录</summary>{approvals.filter(item => item.status !== 'pending').map(item => <p key={item.id} className="tool-caption">{names[item.operation.tool_name] ?? item.operation.tool_name} · {states[item.status] ?? item.status}</p>)}</details>}
     <div className="tool-card-heading tool-list-heading"><FileText size={16} /><strong>保存的工件</strong><span>{artifacts.length}</span></div>
     <div className="artifact-list">{artifacts.map(file => <button key={file.id} onClick={() => void showArtifact(file)} disabled={busy === file.id}><FileText size={15} /><span><strong>{file.name}</strong><small>{file.kind === 'context_summary' ? file.metadata_json.output_status === 'complete' ? '上下文摘要' : '摘要未采用 · 已保留原记录' : file.kind} · {(file.size_bytes / 1024).toFixed(1)} KB</small></span></button>)}</div>
